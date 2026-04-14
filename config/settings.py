@@ -20,7 +20,7 @@ SERVICE_ACCOUNT_KEY_PATH = PROJECT_DIR / "service-account-key.json"
 # API limieten
 INSPECTION_DAILY_LIMIT_PER_SHOP = 2000
 INDEXING_DAILY_LIMIT = 200  # totaal over alle shops
-INSPECTION_DELAY_SECONDS = 0.5  # pauze tussen API calls
+INSPECTION_DELAY_SECONDS = 2.0  # pauze tussen API calls
 INDEXING_DELAY_SECONDS = 0.5
 
 # Scheduling
