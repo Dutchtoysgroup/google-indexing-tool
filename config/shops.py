@@ -1,5 +1,7 @@
 """Configuratie van alle EXIT Toys webshops."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 
 

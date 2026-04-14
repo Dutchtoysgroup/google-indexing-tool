@@ -1,5 +1,7 @@
 """Database query functies."""
 
+from __future__ import annotations
+
 from datetime import date, datetime, timedelta
 
 from db.models import get_connection

@@ -1,5 +1,7 @@
 """Scheduling strategie - bepaalt welke URLs vandaag aan de beurt zijn."""
 
+from __future__ import annotations
+
 import logging
 
 from config.settings import (

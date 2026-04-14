@@ -1,5 +1,7 @@
 """Sitemap collector - haalt URLs op uit alle shop sitemaps."""
 
+from __future__ import annotations
+
 import logging
 import re
 
