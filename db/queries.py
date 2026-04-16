@@ -168,8 +168,14 @@ def get_urls_needing_reinspection(shop_id: str, days: int = 3, limit: int = 100)
 
 
 def get_urls_stale_inspection(shop_id: str, days: int = 7, limit: int = 100) -> list[dict]:
-    """URLs waarvan de inspection ouder is dan X dagen (inclusief PASS)."""
+    """URLs waarvan de inspection ouder is dan X dagen.
+
+    PASS URLs worden pas na 30 dagen opnieuw gecheckt (lage prio).
+    Niet-PASS URLs worden na `days` dagen opnieuw gecheckt.
+    Niet-PASS URLs komen eerst aan de beurt.
+    """
     cutoff = datetime.utcnow() - timedelta(days=days)
+    cutoff_pass = datetime.utcnow() - timedelta(days=30)
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -177,11 +183,17 @@ def get_urls_stale_inspection(shop_id: str, days: int = 7, limit: int = 100) -> 
                 SELECT shop_id, url, url_type FROM urls
                 WHERE shop_id = %s
                   AND last_inspected IS NOT NULL
-                  AND last_inspected < %s
                   AND removed_from_sitemap = FALSE
-                ORDER BY last_inspected ASC
+                  AND (
+                    (verdict = 'PASS' AND last_inspected < %s)
+                    OR
+                    (verdict != 'PASS' AND last_inspected < %s)
+                  )
+                ORDER BY
+                    CASE WHEN verdict = 'PASS' THEN 1 ELSE 0 END,
+                    last_inspected ASC
                 LIMIT %s
-            """, (shop_id, cutoff, limit))
+            """, (shop_id, cutoff_pass, cutoff, limit))
             return cur.fetchall()
     finally:
         conn.close()
