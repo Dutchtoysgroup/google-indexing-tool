@@ -1,9 +1,11 @@
 name: Daily Indexing Pipeline
 
 on:
-  schedule:
-    # Dagelijks om 02:00 UTC
-    - cron: '0 2 * * *'
+  # Schedule uitgeschakeld - dagelijkse run draait nu lokaal op de Mac mini
+  # via launchd (zie ~/Library/LaunchAgents/com.exittoys.indexing.plist).
+  # Handmatig triggeren blijft mogelijk via "Run workflow" in de Actions UI;
+  # daarbij gelden de defaults in config/settings.py (15 inspecties/shop)
+  # zodat de run binnen het 40-minuten timeout past.
   workflow_dispatch: {}
 
 jobs:
