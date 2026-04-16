@@ -17,11 +17,12 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "")
 GOOGLE_SERVICE_ACCOUNT_KEY = os.environ.get("GOOGLE_SERVICE_ACCOUNT_KEY", "")
 SERVICE_ACCOUNT_KEY_PATH = PROJECT_DIR / "service-account-key.json"
 
-# API limieten
-INSPECTION_DAILY_LIMIT_PER_SHOP = 15
-INDEXING_DAILY_LIMIT = 200  # totaal over alle shops
-INSPECTION_DELAY_SECONDS = 2.0  # pauze tussen API calls
-INDEXING_DELAY_SECONDS = 0.5
+# API limieten (overrideable via env vars zodat lokale runs veel hoger kunnen
+# dan GitHub Actions runs die binnen een korte timeout moeten passen)
+INSPECTION_DAILY_LIMIT_PER_SHOP = int(os.environ.get("INSPECTION_DAILY_LIMIT_PER_SHOP", "15"))
+INDEXING_DAILY_LIMIT = int(os.environ.get("INDEXING_DAILY_LIMIT", "200"))  # totaal over alle shops
+INSPECTION_DELAY_SECONDS = float(os.environ.get("INSPECTION_DELAY_SECONDS", "2.0"))
+INDEXING_DELAY_SECONDS = float(os.environ.get("INDEXING_DELAY_SECONDS", "0.5"))
 
 # Scheduling
 RETRY_INTERVAL_DAYS = 3   # opnieuw inspecteren na X dagen bij failure
