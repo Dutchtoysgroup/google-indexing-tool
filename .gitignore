@@ -12,3 +12,4 @@ data/indexing.db
 data/logs/
 *.log
 .DS_Store
+.claude/

@@ -2,10 +2,14 @@ name: Daily Indexing Pipeline
 
 on:
   # Schedule uitgeschakeld - dagelijkse run draait nu lokaal op de Mac mini
-  # via launchd (zie ~/Library/LaunchAgents/com.exittoys.indexing.plist).
-  # Handmatig triggeren blijft mogelijk via "Run workflow" in de Actions UI;
-  # daarbij gelden de defaults in config/settings.py (15 inspecties/shop)
-  # zodat de run binnen het 40-minuten timeout past.
+  # via launchd (zie ~/Library/LaunchAgents/com.exittoys.indexing.plist),
+  # waar geen tijdsbudget geldt en de volledige API-quota benut worden.
+  #
+  # Handmatig triggeren blijft mogelijk via "Run workflow" in de Actions UI of
+  # via /api/trigger/run in het dashboard. Op GitHub Actions hanteren we een
+  # tijdsbudget van 30 min voor scan+inspect (via TIME_BUDGET_MINUTES hieronder);
+  # push en snapshot lopen daarna altijd door zodat het dagelijkse push-budget
+  # van Google (200/dag) ook op Actions-runs volledig benut wordt.
   workflow_dispatch: {}
 
 jobs:
@@ -30,4 +34,5 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.INDEXING_DATABASE_URL }}
           GOOGLE_SERVICE_ACCOUNT_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY }}
+          TIME_BUDGET_MINUTES: "30"
         run: python main.py
