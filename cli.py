@@ -1,4 +1,4 @@
-"""CLI interface voor de EXIT Toys Indexing Tool."""
+"""CLI interface voor de Google Indexing Tool."""
 
 import logging
 import sys
@@ -26,13 +26,13 @@ def setup_logging(verbose: bool = False):
 @click.group()
 @click.option("--verbose", "-v", is_flag=True, help="Verbose logging")
 def cli(verbose):
-    """EXIT Toys Google Indexing Tool"""
+    """Google Indexing Tool — monitor en push URLs naar de Google Indexing API."""
     setup_logging(verbose)
     init_db()
 
 
 @cli.command()
-@click.option("--shop", "-s", default=None, help="Shop ID (bijv. exittoys_nl)")
+@click.option("--shop", "-s", default=None, help="Shop ID zoals in shops.json")
 def scan(shop):
     """Verzamel URLs uit sitemaps van alle (of een specifieke) shop."""
     collector = SitemapCollector()

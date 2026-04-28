@@ -1,15 +1,14 @@
 name: Daily Indexing Pipeline
 
 on:
-  # Schedule uitgeschakeld - dagelijkse run draait nu lokaal op de Mac mini
-  # via launchd (zie ~/Library/LaunchAgents/com.exittoys.indexing.plist),
-  # waar geen tijdsbudget geldt en de volledige API-quota benut worden.
+  # Standaard staat alleen handmatig triggeren aan. Wil je een dagelijkse run?
+  # Voeg dan een `schedule:` blok toe, bijvoorbeeld:
+  #   schedule:
+  #     - cron: "0 2 * * *"   # 02:00 UTC, elke dag
   #
-  # Handmatig triggeren blijft mogelijk via "Run workflow" in de Actions UI of
-  # via /api/trigger/run in het dashboard. Op GitHub Actions hanteren we een
-  # tijdsbudget van 30 min voor scan+inspect (via TIME_BUDGET_MINUTES hieronder);
-  # push en snapshot lopen daarna altijd door zodat het dagelijkse push-budget
-  # van Google (200/dag) ook op Actions-runs volledig benut wordt.
+  # Op GitHub Actions hanteren we een tijdsbudget (TIME_BUDGET_MINUTES hieronder)
+  # voor scan+inspect; push en snapshot lopen daarna altijd door, zodat het
+  # dagelijkse push-budget van Google (200/dag) volledig benut wordt.
   workflow_dispatch: {}
 
 jobs:

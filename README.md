@@ -1,316 +1,412 @@
-# EXIT Toys Google Indexing Tool
+# Google Indexing Tool
 
-Automatische tool die de indexeringsstatus van alle EXIT Toys webshops monitort en niet-geindexeerde URLs pusht naar Google.
+Automatische tool die de indexeringsstatus van je webshops in Google monitort en niet-geïndexeerde URLs naar Google pusht via de officiële Indexing API.
+
+De tool is generiek: of je nu één webshop hebt of er twintig, je vult zelf je domeinen, talen en Google-account in.
+
+---
+
+## Inhoudsopgave
+
+1. [Wat doet deze tool?](#wat-doet-deze-tool)
+2. [Wat heb je nodig?](#wat-heb-je-nodig)
+3. [Volledige installatie](#volledige-installatie)
+4. [Dagelijks gebruik](#dagelijks-gebruik)
+5. [CLI-commando's](#cli-commandos)
+6. [API-limieten](#api-limieten)
+7. [Problemen oplossen](#problemen-oplossen)
+8. [Begrippenlijst](#begrippenlijst)
+
+---
 
 ## Wat doet deze tool?
 
-1. **Scan** - Verzamelt alle URLs uit de sitemaps van 12 EXIT Toys webshops
-2. **Inspect** - Checkt de indexeringsstatus via de Google URL Inspection API
-3. **Push** - Pusht niet-geindexeerde URLs naar Google via de Indexing API
-4. **Snapshot** - Slaat dagelijkse statistieken op voor het dashboard
+De tool draait elke dag (lokaal of via GitHub Actions) en doorloopt vier stappen:
 
-De tool draait elke nacht automatisch via GitHub Actions.
+| Stap | Wat | Resultaat |
+|------|-----|-----------|
+| 1. **Scan** | Haalt alle URLs op uit de sitemaps van je webshops | Volledige lijst van pagina's |
+| 2. **Inspect** | Vraagt aan Google: "Is deze URL geïndexeerd?" via de URL Inspection API | Status per URL |
+| 3. **Push** | Stuurt niet-geïndexeerde URLs naar Google via de Indexing API | Hint aan Google om opnieuw te kijken |
+| 4. **Snapshot** | Slaat dagelijkse statistieken op | Historie voor trendgrafieken |
 
-## Webshops
-
-NL, BE, DE, AT, UK, IE, SE, DK, ES, IT, PL, FR
-
----
-
-## Volledige Setup Handleiding
-
-Volg deze stappen precies in volgorde. Doe ze in 1 sessie zodat je niets vergeet.
+Alle data wordt opgeslagen in een PostgreSQL-database (we gebruiken Neon, dat een gratis tier heeft). Een apart dashboardproject (Next.js op Vercel) leest dezelfde database uit en toont de status visueel.
 
 ---
 
-### STAP 1: Google Cloud Project aanmaken
+## Wat heb je nodig?
 
-Een Google Cloud Project is de "container" waarin je Google APIs kunt gebruiken. Het is gratis voor ons gebruik.
+Voor de installatie heb je deze gratis accounts nodig (en je hoeft geen creditcard op te geven):
 
-1. Open je browser en ga naar: **https://console.cloud.google.com/**
-2. Log in met het Google-account dat ook toegang heeft tot Google Search Console van EXIT Toys
-3. Bovenaan de pagina zie je een dropdown met projectnamen. Klik erop.
-4. Klik op **"NIEUW PROJECT"** (rechtsboven in het popup-venster)
+1. **Een Google-account** dat eigenaar is van de webshop(s) in [Google Search Console](https://search.google.com/search-console). Deze account wordt gebruikt om de Google Cloud-omgeving aan te maken.
+2. **Een GitHub-account** om de tool te draaien (lokaal of via GitHub Actions).
+3. **Een Neon-account** ([neon.tech](https://neon.tech)) voor de database.
+4. *(Optioneel)* **Een Vercel-account** als je het bijbehorende dashboard wil deployen.
+
+Verder heb je nodig:
+
+- **Python 3.10 of hoger** op je computer (controleer met `python3 --version` in je Terminal). Heb je Python nog niet? Download via [python.org](https://www.python.org/downloads/).
+- **Een teksteditor** om configuratiebestanden aan te passen (TextEdit op Mac werkt, maar [VS Code](https://code.visualstudio.com/) is gemakkelijker).
+
+---
+
+## Volledige installatie
+
+Volg deze stappen achter elkaar in één sessie. Alles wat je instelt of kopieert (URLs, e-mailadressen, sleutels) bewaar je in een tekstbestand zodat je niets kwijtraakt.
+
+> 💡 **Tip:** Open dit document op één scherm en je browser op een ander. Zo kun je elke stap meelezen terwijl je doet wat er staat.
+
+---
+
+### Stap 1 — Configureer je webshops
+
+In de map `config/` staan twee bestanden:
+
+- `shops.example.json` → een sjabloon met fictieve voorbeelden
+- `shops.json` → jouw eigen configuratie (deze maak je nu aan)
+
+**Wat moet je doen?**
+
+1. Maak een kopie van het sjabloon:
+   ```bash
+   cd "pad/naar/google-indexing-tool"
+   cp config/shops.example.json config/shops.json
+   ```
+2. Open `config/shops.json` in een teksteditor.
+3. Vervang de voorbeeld-shops door jouw eigen webshops. Voor elke shop vul je in:
+
+   | Veld | Wat | Voorbeeld |
+   |------|-----|-----------|
+   | `shop_id` | Unieke ID, alleen letters/cijfers/underscores | `mijnshop_nl` |
+   | `name` | Weergavenaam (mag spaties bevatten) | `Mijn Shop Nederland` |
+   | `base_url` | Hoofd-URL van de webshop, zónder slash op het eind | `https://www.mijnshop.nl` |
+   | `gsc_site_url` | Exacte URL-property zoals in Google Search Console | `https://www.mijnshop.nl/` |
+   | `language_code` | BCP-47 taalcode (`taal-LAND`) | `nl-NL`, `de-DE`, `en-GB` |
+   | `enabled` | `true` om mee te scannen, `false` om over te slaan | `true` |
+
+4. Sla het bestand op.
+
+> ⚠️ **Let op:** Het bestand `config/shops.json` staat in `.gitignore` en wordt **niet** mee-gecommit naar Git. Zo blijft jouw configuratie privé en kunnen anderen het bestand niet per ongeluk overschrijven.
+
+---
+
+### Stap 2 — Maak een Google Cloud-project aan
+
+Een Google Cloud-project is de "container" waarin Google APIs voor jouw account beschikbaar zijn. Het is gratis voor het volume dat deze tool gebruikt.
+
+1. Open je browser en ga naar **https://console.cloud.google.com/**
+2. Log in met het Google-account dat ook eigenaar is van je shop(s) in Google Search Console.
+3. Bovenin de pagina staat een dropdown met projectnamen. Klik erop.
+4. Klik in het popup-venster rechtsboven op **"NIEUW PROJECT"**.
 5. Vul in:
-   - **Projectnaam:** `EXIT Indexing`
+   - **Projectnaam:** een herkenbare naam, bijv. `Google Indexing Tool`
    - **Organisatie:** laat staan zoals het is
    - **Locatie:** laat staan zoals het is
-6. Klik op **"MAKEN"**
-7. Wacht ~10 seconden. Je wordt automatisch naar het nieuwe project geleid.
+6. Klik op **"MAKEN"** en wacht ongeveer 10 seconden tot je naar het nieuwe project wordt geleid.
 
-**Controleer:** Bovenaan de pagina moet nu "EXIT Indexing" staan als actief project.
+✅ **Controle:** Bovenaan de pagina staat nu de projectnaam die je hebt gekozen.
 
 ---
 
-### STAP 2: Google APIs inschakelen
+### Stap 3 — Schakel twee Google APIs in
 
-We moeten twee APIs "aanzetten" in ons project. Zonder dit weigert Google onze verzoeken.
+Een API moet "aangezet" worden in je Google Cloud-project, anders weigert Google verzoeken. We hebben er twee nodig:
 
-#### API 1: Search Console API
+#### API 1 — Google Search Console API
 
-1. Ga naar: **https://console.cloud.google.com/apis/library**
-2. Typ in de zoekbalk: **Google Search Console API**
+1. Ga naar **https://console.cloud.google.com/apis/library**
+2. Typ in de zoekbalk: `Google Search Console API`
 3. Klik op het zoekresultaat **"Google Search Console API"**
-4. Klik op de grote blauwe knop **"INSCHAKELEN"** (of "ENABLE")
-5. Wacht tot de pagina laadt. Je ziet een bevestiging.
+4. Klik op de blauwe knop **"INSCHAKELEN"**
+5. Wacht tot de pagina laadt (je ziet een bevestiging).
 
-#### API 2: Web Search Indexing API
+#### API 2 — Web Search Indexing API
 
-1. Ga terug naar: **https://console.cloud.google.com/apis/library**
-2. Typ in de zoekbalk: **Web Search Indexing API**
-3. Klik op **"Web Search Indexing API"**
+1. Ga terug naar **https://console.cloud.google.com/apis/library**
+2. Typ in de zoekbalk: `Web Search Indexing API`
+3. Klik op het zoekresultaat **"Web Search Indexing API"**
 4. Klik op **"INSCHAKELEN"**
 
-**Controleer:** Ga naar https://console.cloud.google.com/apis/enabled - je zou beide APIs moeten zien.
+✅ **Controle:** Op **https://console.cloud.google.com/apis/enabled** zie je nu beide APIs in de lijst.
 
 ---
 
-### STAP 3: Service Account aanmaken
+### Stap 4 — Maak een Service Account aan
 
-Een Service Account is als een "robot-gebruiker" die namens jou met Google praat. Het heeft een eigen emailadres en een digitale sleutel (JSON-bestand).
+Een Service Account is een soort "robot-gebruiker" die namens jou met de Google APIs praat. Het heeft een eigen e-mailadres en een digitale sleutel (een JSON-bestand).
 
-1. Ga naar: **https://console.cloud.google.com/iam-admin/serviceaccounts**
-2. Zorg dat bovenaan "EXIT Indexing" als project geselecteerd is
-3. Klik op **"+ SERVICEACCOUNT MAKEN"** (bovenaan)
+1. Ga naar **https://console.cloud.google.com/iam-admin/serviceaccounts**
+2. Controleer dat bovenaan jouw project geselecteerd is.
+3. Klik bovenaan op **"+ SERVICEACCOUNT MAKEN"**.
 4. Vul in:
-   - **Naam:** `indexing-bot`
-   - **ID:** wordt automatisch ingevuld (bijv. `indexing-bot@exit-indexing.iam.gserviceaccount.com`)
-   - **Beschrijving:** `Automatische indexering van EXIT Toys webshops`
-5. Klik op **"MAKEN EN DOORGAAN"**
-6. Bij "Rollen" - sla dit over, klik gewoon op **"DOORGAAN"**
-7. Bij "Gebruikerstoegang" - sla dit ook over, klik op **"GEREED"**
+   - **Naam:** `indexing-bot` (of een andere herkenbare naam)
+   - **ID:** wordt automatisch gevuld
+   - **Beschrijving:** bijv. `Automatische indexering voor mijn webshops`
+5. Klik op **"MAKEN EN DOORGAAN"**.
+6. Bij "Rollen toewijzen": **sla over**, klik op **"DOORGAAN"**.
+7. Bij "Gebruikerstoegang verlenen": **sla over**, klik op **"GEREED"**.
 
-Je ziet nu je service account in de lijst. **Kopieer het emailadres** (bijv. `indexing-bot@exit-indexing.iam.gserviceaccount.com`). Je hebt dit straks nodig!
+Je ziet nu het Service Account in de lijst staan, met een e-mailadres dat eruitziet als:
+```
+indexing-bot@JOUW-PROJECT.iam.gserviceaccount.com
+```
+
+📝 **Kopieer dit e-mailadres** en bewaar het in je tekstbestand. Je hebt het straks nodig om het Service Account toegang te geven tot Search Console.
 
 #### JSON-sleutel downloaden
 
-1. Klik op het service account dat je zojuist hebt gemaakt (op de naam)
-2. Klik bovenaan op het tabblad **"SLEUTELS"** (of "KEYS")
-3. Klik op **"SLEUTEL TOEVOEGEN"** > **"Nieuwe sleutel maken"**
-4. Kies **"JSON"**
-5. Klik op **"MAKEN"**
-6. Er wordt automatisch een `.json` bestand gedownload naar je Downloads map
-7. **BEWAAR DIT BESTAND GOED** - dit is het "wachtwoord" van de robot
+Nu maak je het "wachtwoord" van de robot in de vorm van een JSON-bestand.
 
-Het bestand heet iets als `exit-indexing-abc123.json`.
+1. Klik op het zojuist aangemaakte Service Account (op de naam, niet op het mailadres).
+2. Klik bovenaan op het tabblad **"SLEUTELS"**.
+3. Klik op **"SLEUTEL TOEVOEGEN"** > **"Nieuwe sleutel maken"**.
+4. Kies **"JSON"** als sleuteltype.
+5. Klik op **"MAKEN"**.
+6. Er wordt automatisch een `.json`-bestand gedownload, meestal naar je map `Downloads`.
+
+⚠️ **Bewaar dit bestand veilig** — het is letterlijk de sleutel waarmee de tool met Google praat. Iemand met dit bestand kan namens jou indexeringen aanvragen. Plaats het niet in een gedeelde map en commit het nooit in Git.
 
 ---
 
-### STAP 4: Service Account toevoegen aan Google Search Console
+### Stap 5 — Geef het Service Account toegang tot Google Search Console
 
-Nu moeten we de "robot" (Service Account) toegang geven tot elke EXIT Toys webshop in Google Search Console. Dit moet je voor **alle 12 webshops** doen.
+Nu moeten we de "robot" toegang geven tot elke webshop in Google Search Console. Doe dit voor **iedere webshop** die in `shops.json` staat.
 
-1. Ga naar: **https://search.google.com/search-console**
-2. Kies de eerste webshop (bijv. exittoys.nl)
-3. Klik links onderaan op **"Instellingen"** (tandwiel-icoon)
-4. Klik op **"Gebruikers en rechten"**
-5. Klik op de blauwe knop **"GEBRUIKER TOEVOEGEN"**
+1. Ga naar **https://search.google.com/search-console**
+2. Selecteer je eerste webshop bovenaan (de URL-property).
+3. Klik linksonder op **"Instellingen"** (het tandwiel-icoon).
+4. Klik op **"Gebruikers en rechten"**.
+5. Klik op de blauwe knop **"GEBRUIKER TOEVOEGEN"**.
 6. Vul in:
-   - **E-mailadres:** het Service Account emailadres (bijv. `indexing-bot@exit-indexing.iam.gserviceaccount.com`)
+   - **E-mailadres:** plak het Service Account-mailadres uit stap 4
    - **Rechten:** kies **"Eigenaar"**
-7. Klik op **"Toevoegen"**
+7. Klik op **"Toevoegen"**.
 
-**HERHAAL dit voor alle 12 webshops:**
-- exittoys.nl
-- exittoys.be
-- exittoys.de
-- exittoys.at
-- exittoys.co.uk
-- exittoys.ie
-- exittoys.se
-- exittoys.dk
-- exittoys.es
-- exittoys.it
-- exittoys.pl
-- exittoys.fr
+🔁 **Herhaal deze stap voor elke webshop** in `shops.json`.
 
-**Tip:** Houd het emailadres in je klembord (kopieer het), dan kun je het steeds plakken.
+> 💡 **Tip:** Houd het Service Account-mailadres in je klembord (Cmd+C). Dan kun je het bij elke shop direct plakken (Cmd+V).
 
 ---
 
-### STAP 5: Neon Database aanmaken
+### Stap 6 — Maak een Neon-database aan
 
-De tool slaat alle URL-data op in een database. We gebruiken Neon (gratis PostgreSQL in de cloud).
+De tool slaat alle URL-statussen en historische gegevens op in PostgreSQL. We gebruiken Neon — dat heeft een gratis tier die ruim voldoende is voor dit gebruik.
 
-1. Ga naar: **https://console.neon.tech/**
-2. Log in met je bestaande account
-3. Je hebt al een project. Klik erop om het te openen.
-4. Klik in het linkermenu op **"Databases"**
-5. Klik op **"New Database"**
-6. Naam: **`indexing`**
-7. Klik op **"Create"**
-8. Ga nu naar **"Dashboard"** (linkermenu)
-9. Bij **"Connection string"** - klik op het oogje om de string te tonen
-10. **BELANGRIJK:** Zorg dat in de dropdown naast de connection string de database **"indexing"** is geselecteerd (niet "neondb")
-11. Kopieer de hele connection string. Die ziet er zo uit:
+1. Ga naar **https://console.neon.tech/** en log in (of maak een account aan).
+2. Maak een nieuw project of open een bestaand project.
+3. Klik in het linkermenu op **"Databases"**.
+4. Klik op **"New Database"**.
+5. Geef de database een naam, bijvoorbeeld: `indexing`
+6. Klik op **"Create"**.
+7. Ga vervolgens in het linkermenu naar **"Dashboard"**.
+8. Bij **"Connection string"** klik je op het oogje 👁 om de string zichtbaar te maken.
+9. **Belangrijk:** Selecteer in het dropdown-menu naast de connection string je nieuwe database (`indexing`), en niet de standaard `neondb`.
+10. Kopieer de hele connection string. Die ziet er ongeveer zo uit:
     ```
-    postgresql://neondb_owner:abc123@ep-cool-name-12345.eu-west-1.aws.neon.tech/indexing?sslmode=require
+    postgresql://neondb_owner:WACHTWOORD@ep-xxxxxx.eu-west-1.aws.neon.tech/indexing?sslmode=require
     ```
 
-**Bewaar deze connection string** - je hebt hem twee keer nodig (voor de tool EN het dashboard).
+📝 **Bewaar deze connection string** in je tekstbestand. Je hebt hem twee keer nodig (één keer voor de tool, één keer voor het dashboard).
 
 ---
 
-### STAP 6: GitHub Secrets instellen voor de Indexing Tool
+### Stap 7 — Installeer de tool lokaal en draai een eerste test
 
-GitHub Secrets zijn veilige "geheime variabelen" die GitHub Actions kan gebruiken. Niemand anders kan ze zien.
+Nu hebben we alles om te testen of de tool werkt op jouw computer.
 
-#### Secret 1: Database URL
+#### Python-pakketten installeren
 
-1. Ga naar: **https://github.com/svendijk2408/google-indexing-tool/settings/secrets/actions**
-2. Klik op **"New repository secret"**
-3. Vul in:
-   - **Name:** `INDEXING_DATABASE_URL`
-   - **Secret:** plak de Neon connection string uit stap 5
-4. Klik op **"Add secret"**
-
-#### Secret 2: Google Service Account Key
-
-Het JSON-bestand uit stap 3 moet als "gecodeerde tekst" worden opgeslagen. Dat doe je zo:
-
-1. Open je Terminal (Spotlight > typ "Terminal")
-2. Typ het volgende commando (vervang het pad naar jouw JSON-bestand):
-   ```bash
-   base64 -i ~/Downloads/exit-indexing-abc123.json | pbcopy
-   ```
-   (Dit kopieert de gecodeerde tekst naar je klembord. Je ziet niks in de Terminal, dat is normaal.)
-3. Ga terug naar GitHub: **https://github.com/svendijk2408/google-indexing-tool/settings/secrets/actions**
-4. Klik op **"New repository secret"**
-5. Vul in:
-   - **Name:** `GOOGLE_SERVICE_ACCOUNT_KEY`
-   - **Secret:** plak (Cmd+V) - de gecodeerde tekst wordt geplakt
-6. Klik op **"Add secret"**
-
-**Controleer:** Je hebt nu 2 secrets: `INDEXING_DATABASE_URL` en `GOOGLE_SERVICE_ACCOUNT_KEY`.
-
----
-
-### STAP 7: Dashboard deployen op Vercel
-
-Het dashboard is een website waar je de indexeringsstatus kunt bekijken.
-
-1. Ga naar: **https://vercel.com/dashboard**
-2. Klik op **"Add New..."** > **"Project"**
-3. Onder "Import Git Repository" zoek je **"google-indexing-dashboard"**
-4. Klik op **"Import"**
-5. Bij **"Environment Variables"** voeg je toe:
-   - **Key:** `DATABASE_URL`
-   - **Value:** plak de Neon connection string uit stap 5
-6. Klik op **"Deploy"**
-7. Wacht ~1 minuut. Vercel bouwt het dashboard.
-8. Je krijgt een URL (bijv. `google-indexing-dashboard-xxx.vercel.app`)
-
-**Dit is je dashboard!** Bookmark deze URL.
-
-Het dashboard toont nu "Nog geen data" - dat is normaal. De data komt na de eerste scan.
-
----
-
-### STAP 8: Eerste test draaien
-
-Nu gaan we testen of alles werkt. Open je Terminal:
+Open je Terminal (op Mac: Spotlight → "Terminal"). Ga naar de projectmap en installeer de afhankelijkheden:
 
 ```bash
-# Ga naar het project
-cd "/Volumes/Ugreen TB5 SSD/EXIT-Code/Scripts/google-indexing-tool"
+# Ga naar de projectmap (pas het pad aan naar jouw situatie)
+cd "pad/naar/google-indexing-tool"
 
-# Installeer de benodigde Python packages
+# Installeer de Python-pakketten
 pip install -r requirements.txt
-
-# Stel de database URL in (plak jouw Neon connection string)
-export DATABASE_URL="postgresql://neondb_owner:JOUW_WACHTWOORD@ep-JOUW-SERVER.eu-west-1.aws.neon.tech/indexing?sslmode=require"
-
-# Test 1: Scan de sitemaps van 1 shop
-python cli.py scan --shop exittoys_nl
-# Je zou moeten zien: "EXIT Toys Nederland: XXX URLs"
-
-# Test 2: Bekijk het rapport
-python cli.py report
-# Je ziet nu een tabel met aantallen per shop
-
-# Test 3: Inspecteer een paar URLs (vereist Service Account)
-# Kopieer het JSON-bestand naar het project:
-cp ~/Downloads/exit-indexing-*.json service-account-key.json
-
-python cli.py inspect --shop exittoys_nl --limit 5
-# Je zou per URL een [PASS] of [FAIL] moeten zien
 ```
 
-Als de scan werkt, werkt de database connectie. Als de inspect werkt, werkt het Service Account.
+> ℹ️ Als `pip` niet werkt, probeer `pip3 install -r requirements.txt`.
+
+#### Sleutels en database-URL klaarzetten
+
+```bash
+# Plaats het JSON-bestand in de projectmap onder de juiste naam
+cp ~/Downloads/JOUW-DOWNLOAD-NAAM.json service-account-key.json
+
+# Stel de database-URL in voor deze Terminal-sessie
+export DATABASE_URL="postgresql://neondb_owner:WACHTWOORD@ep-xxxxxx.eu-west-1.aws.neon.tech/indexing?sslmode=require"
+```
+
+> ℹ️ De export-regel werkt alleen in deze Terminal-sessie. Open je een nieuwe Terminal, dan moet je hem opnieuw uitvoeren.
+
+#### De drie tests uitvoeren
+
+```bash
+# Test 1 — Sitemap scannen voor één shop
+python3 cli.py scan --shop JOUW_SHOP_ID
+# Verwacht: "<naam>: XXX URLs"
+
+# Test 2 — Statusrapport bekijken
+python3 cli.py report
+# Verwacht: een tabel met aantallen per shop
+
+# Test 3 — Een paar URLs inspecteren (vereist het Service Account)
+python3 cli.py inspect --shop JOUW_SHOP_ID --limit 5
+# Verwacht: per URL een "[PASS]" of "[NEUTRAL]"-regel
+```
+
+✅ Werken alle drie? Dan zit de configuratie goed.
+
+❌ Gaat er iets mis? Zie [Problemen oplossen](#problemen-oplossen) onderaan deze pagina.
 
 ---
 
-### STAP 9: GitHub Actions testen
+### Stap 8 — Draaien via GitHub Actions (optioneel)
 
-De tool draait automatisch elke nacht om 02:00 UTC (04:00 Nederlandse tijd). Maar je kunt hem ook handmatig starten:
+Wil je dat de tool dagelijks automatisch draait zonder dat je computer aan moet staan? Dan kun je hem op GitHub Actions zetten.
 
-1. Ga naar: **https://github.com/svendijk2408/google-indexing-tool/actions**
-2. Klik links op **"Daily Indexing Pipeline"**
-3. Klik rechts op **"Run workflow"** > **"Run workflow"**
-4. Wacht ~5-15 minuten
-5. Klik op de running workflow om de logs te bekijken
-6. Bij "Run indexing pipeline" zie je de output van de tool
+#### 8a. Project naar GitHub pushen
 
-Als alles groen is, werkt de automatische pipeline!
+Maak een (privé) repository op GitHub en push de code daarheen. Zorg dat `service-account-key.json` en `config/shops.json` **niet** mee worden gepusht — die staan al in `.gitignore`.
+
+#### 8b. GitHub Secrets instellen
+
+GitHub Secrets zijn versleutelde variabelen die alleen GitHub Actions kan lezen. Niemand anders (ook jijzelf niet meer) kan ze later ophalen.
+
+**Secret 1 — Database-URL:**
+
+1. Ga in je GitHub-repository naar **Settings → Secrets and variables → Actions**.
+2. Klik op **"New repository secret"**.
+3. Vul in:
+   - **Name:** `INDEXING_DATABASE_URL`
+   - **Secret:** plak de Neon connection string uit stap 6
+4. Klik op **"Add secret"**.
+
+**Secret 2 — Service Account-sleutel (base64):**
+
+GitHub Secrets accepteren geen JSON-bestanden, dus we coderen het bestand eerst als base64-tekst.
+
+1. Open je Terminal.
+2. Codeer het JSON-bestand naar je klembord:
+   ```bash
+   # macOS
+   base64 -i ~/Downloads/JOUW-DOWNLOAD-NAAM.json | pbcopy
+
+   # Linux
+   base64 -w 0 ~/Downloads/JOUW-DOWNLOAD-NAAM.json | xclip -selection clipboard
+   ```
+   *(Je ziet niets in de Terminal — dat klopt, de tekst staat nu op je klembord.)*
+
+3. Ga terug naar GitHub: **Settings → Secrets and variables → Actions**.
+4. Klik op **"New repository secret"**.
+5. Vul in:
+   - **Name:** `GOOGLE_SERVICE_ACCOUNT_KEY`
+   - **Secret:** plak (Cmd+V) — de gecodeerde tekst wordt geplakt
+6. Klik op **"Add secret"**.
+
+✅ **Controle:** Je ziet nu twee secrets in de lijst: `INDEXING_DATABASE_URL` en `GOOGLE_SERVICE_ACCOUNT_KEY`.
+
+#### 8c. Eerste workflow handmatig starten
+
+1. Ga naar het tabblad **"Actions"** in je GitHub-repository.
+2. Klik links op **"Daily Indexing Pipeline"**.
+3. Klik rechts op **"Run workflow"** → **"Run workflow"**.
+4. Wacht 5–15 minuten.
+5. Klik op de lopende workflow om de logs in real-time te volgen.
+
+✅ Is alles groen? Dan werkt de pipeline ook op GitHub.
+
+#### 8d. Dagelijks automatisch draaien
+
+Standaard draait de workflow alleen als je hem handmatig start. Wil je een dagelijks schema? Bewerk dan `.github/workflows/daily-indexing.yml` en voeg toe onder `on:`:
+
+```yaml
+on:
+  schedule:
+    - cron: "0 2 * * *"   # 02:00 UTC (= 03:00 in NL-winter, 04:00 in NL-zomer)
+  workflow_dispatch: {}
+```
 
 ---
 
-### STAP 10: Dashboard bekijken
+## Dagelijks gebruik
 
-Na de eerste succesvolle scan (stap 8 of 9) verschijnen er gegevens in het dashboard:
+Na de installatie heb je geen omkijken meer naar de tool. Elke run doorloopt deze stappen:
 
-1. Ga naar je Vercel dashboard URL
-2. Je ziet nu:
-   - Bovenaan: totale statistieken
-   - Kaartjes per webshop met coverage percentage
-   - Klik op een webshop voor details + URL-tabel
+| Stap | Wat | Limiet |
+|------|-----|--------|
+| 1. Scan | Alle sitemaps opnieuw ophalen | Geen |
+| 2. Inspect | Nieuwe en oude URLs checken bij Google | Configureerbaar (standaard 15 per shop) |
+| 3. Push | Niet-geïndexeerde URLs aan Google melden | 200 per dag totaal (Google-limiet) |
+| 4. Snapshot | Statistieken opslaan voor de trendgrafiek | 1 per shop per dag |
 
-De trend grafieken vullen zich na een paar dagen automatisch.
-
----
-
-## Hoe werkt het daarna?
-
-Je hoeft **niks meer te doen**. De tool draait elke nacht automatisch:
-
-- **02:00 UTC:** GitHub Actions start de pipeline
-- **Scan:** Alle sitemaps worden opnieuw opgehaald
-- **Inspect:** Nieuwe en probleem-URLs worden gecheckt (max 2000/shop/dag)
-- **Push:** Niet-geindexeerde URLs worden naar Google gestuurd (max 200/dag)
-- **Snapshot:** Statistieken worden opgeslagen voor de trend grafieken
-
-Het dashboard toont altijd de actuele status.
+In de logs zie je per stap wat er gebeurde en wat de eindscore is.
 
 ---
 
-## CLI Commando's (voor handmatig gebruik)
+## CLI-commando's
 
-| Commando | Beschrijving |
-|----------|-------------|
-| `python cli.py scan` | Verzamel URLs uit sitemaps |
-| `python cli.py scan --shop exittoys_nl` | Scan alleen NL shop |
-| `python cli.py inspect` | Inspecteer URLs (slim geselecteerd) |
-| `python cli.py inspect --limit 100` | Max 100 URLs per shop |
-| `python cli.py push` | Push niet-geindexeerde URLs |
-| `python cli.py push --limit 50` | Max 50 URLs pushen |
-| `python cli.py report` | Statusrapport alle shops |
-| `python cli.py report --shop exittoys_nl` | Rapport voor NL |
-| `python cli.py status` | API usage vandaag |
-| `python cli.py run` | Volledige pipeline |
+Alle commando's draai je vanuit de projectmap, met `DATABASE_URL` ingesteld en `service-account-key.json` aanwezig:
 
-## API Limieten
+| Commando | Wat het doet |
+|----------|--------------|
+| `python3 cli.py scan` | Scant sitemaps van álle ingeschakelde shops |
+| `python3 cli.py scan --shop SHOP_ID` | Scant alleen de opgegeven shop |
+| `python3 cli.py inspect` | Inspecteert URLs (slim geselecteerd op prioriteit) |
+| `python3 cli.py inspect --shop SHOP_ID --limit 100` | Max 100 URLs voor één shop |
+| `python3 cli.py push` | Pusht niet-geïndexeerde URLs naar Google |
+| `python3 cli.py push --limit 50` | Max 50 URLs pushen |
+| `python3 cli.py report` | Statusrapport voor alle shops |
+| `python3 cli.py report --shop SHOP_ID` | Detailrapport voor één shop |
+| `python3 cli.py status` | API-gebruik van vandaag |
+| `python3 cli.py run` | Volledige pipeline (scan → inspect → push → snapshot) |
+
+Voeg `--verbose` toe (vóór het commando) voor uitgebreidere logging:
+```bash
+python3 cli.py --verbose scan
+```
+
+---
+
+## API-limieten
 
 | API | Limiet | Toelichting |
 |-----|--------|-------------|
-| URL Inspection | 2.000/dag/shop | Checkt of een URL geindexeerd is |
-| Indexing API | 200/dag totaal | Vraagt Google om een URL te indexeren |
+| URL Inspection | 2.000 per shop per dag | Officiële Google-limiet |
+| Indexing API | 200 per dag (totaal) | Officiële Google-limiet, geldt over alle shops samen |
+
+Je kunt het *standaard* gebruik per run aanpassen via environment variables (handig om GitHub Actions binnen de runtime-budget te houden):
+
+```bash
+export INSPECTION_DAILY_LIMIT_PER_SHOP=15   # standaard
+export INDEXING_DAILY_LIMIT=200             # standaard
+export INSPECTION_DELAY_SECONDS=2.0         # pauze tussen checks
+export INDEXING_DELAY_SECONDS=0.5           # pauze tussen pushes
+```
+
+---
 
 ## Problemen oplossen
 
-| Probleem | Oplossing |
-|----------|-----------|
-| "DATABASE_URL is niet geconfigureerd" | Zet de environment variable of check de GitHub Secret |
-| "Geen Google Service Account credentials" | Check of het JSON-bestand op de juiste plek staat, of de GitHub Secret correct is |
-| "403 Forbidden" bij inspection | Service Account heeft geen (Eigenaar-)rechten in GSC |
-| Dashboard toont "Nog geen data" | Voer eerst een scan uit |
-| GitHub Actions faalt | Check de logs in het Actions tabblad op GitHub |
+| Foutmelding | Oorzaak | Oplossing |
+|-------------|---------|-----------|
+| `Configuratiebestand niet gevonden: config/shops.json` | Stap 1 overgeslagen | Kopieer `shops.example.json` naar `shops.json` en vul je shops in |
+| `DATABASE_URL is niet geconfigureerd` | Environment variable mist | Run `export DATABASE_URL="..."` of zet de GitHub Secret correct |
+| `Geen Google Service Account credentials gevonden` | JSON-bestand of secret ontbreekt | Plaats `service-account-key.json` in de projectmap, of zet `GOOGLE_SERVICE_ACCOUNT_KEY` correct (base64) |
+| `403 Forbidden` bij inspect | Service Account heeft geen toegang in Search Console | Voeg het Service Account toe als **Eigenaar** in GSC (stap 5) |
+| `429 Too Many Requests` | Dagelijks Google-quota op | Normaal — wordt morgen automatisch hervat |
+| `Dashboard toont "Nog geen data"` | Nog geen scan gedraaid | Run eerst `python3 cli.py run` of start de GitHub Action |
+| `database "xxx" does not exist` | Verkeerde database in connection string | Controleer dat je in Neon de juiste database hebt geselecteerd |
+
+---
+
+## Begrippenlijst
+
+- **Sitemap** — Een XML-bestand met alle URLs van je website. Te vinden op `jouwwebshop.nl/sitemap.xml`.
+- **URL Inspection API** — Google-API die per URL vertelt of hij geïndexeerd is.
+- **Indexing API** — Google-API waarmee je Google een hint kunt geven om een URL (opnieuw) te crawlen. Officieel bedoeld voor vacatures en nieuws, maar werkt vaak ook voor andere content.
+- **Service Account** — Een speciaal Google-account dat namens een applicatie inlogt, zonder mens met wachtwoord.
+- **GitHub Secret** — Versleutelde variabele in GitHub. Gebruikt om gevoelige waarden (zoals wachtwoorden en sleutels) veilig te bewaren.
+- **Cron** — Een notatie waarmee je tijdschema's beschrijft. `0 2 * * *` betekent "elke dag om 02:00 UTC".
+- **PASS / NEUTRAL / FAIL** — Verdict van Google bij een URL Inspection: PASS = geïndexeerd, NEUTRAL = bekend maar niet geïndexeerd, FAIL = probleem.

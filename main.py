@@ -49,7 +49,7 @@ def get_time_budget_seconds():
 def main():
     setup_logging()
     logger = logging.getLogger("main")
-    logger.info("EXIT Toys Indexing Pipeline gestart")
+    logger.info("Indexing pipeline gestart")
 
     budget_seconds = get_time_budget_seconds()
     start_time = time.monotonic()

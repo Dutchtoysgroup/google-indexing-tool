@@ -24,7 +24,7 @@ TYPE_PATTERNS = {
 }
 
 HEADERS = {
-    "User-Agent": "EXIT-Indexing-Tool/1.0",
+    "User-Agent": "GoogleIndexingTool/1.0 (+https://github.com/your-org/google-indexing-tool)",
 }
 
 

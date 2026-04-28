@@ -1,0 +1,18 @@
+[
+  {
+    "shop_id": "voorbeeld_nl",
+    "name": "Voorbeeld Webshop Nederland",
+    "base_url": "https://www.voorbeeld.nl",
+    "gsc_site_url": "https://www.voorbeeld.nl/",
+    "language_code": "nl-NL",
+    "enabled": true
+  },
+  {
+    "shop_id": "voorbeeld_de",
+    "name": "Voorbeeld Webshop Deutschland",
+    "base_url": "https://www.voorbeeld.de",
+    "gsc_site_url": "https://www.voorbeeld.de/",
+    "language_code": "de-DE",
+    "enabled": true
+  }
+]
