@@ -50,6 +50,22 @@ CREATE TABLE IF NOT EXISTS daily_snapshots (
     unknown_count INT DEFAULT 0,
     UNIQUE(date, shop_id)
 );
+
+CREATE TABLE IF NOT EXISTS priority_urls (
+    id SERIAL PRIMARY KEY,
+    url TEXT NOT NULL,
+    shop_id TEXT,
+    scheduled_date DATE NOT NULL DEFAULT CURRENT_DATE,
+    status TEXT NOT NULL DEFAULT 'pending',
+    push_error TEXT,
+    pushed_at TIMESTAMP,
+    source TEXT,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE(url, scheduled_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_priority_urls_date_status
+    ON priority_urls(scheduled_date, status);
 """
 
 

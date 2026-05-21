@@ -17,7 +17,12 @@ from config.settings import (
     INDEXING_DELAY_SECONDS,
     SERVICE_ACCOUNT_KEY_PATH,
 )
-from db.queries import mark_as_pushed, get_daily_api_usage, log_api_usage
+from db.queries import (
+    mark_as_pushed,
+    get_daily_api_usage,
+    log_api_usage,
+    mark_priority_pushed,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +94,60 @@ class IndexingPusher:
         except requests.RequestException as e:
             logger.error(f"Request fout bij pushen van {url}: {e}")
             return False
+
+    def push_priority_batch(self, priority_rows: list[dict]) -> int:
+        """Push een batch priority URLs.
+
+        Args:
+            priority_rows: dicts met 'id', 'url', en optioneel 'shop_id' keys
+                           (van get_priority_urls_for_today).
+
+        Returns:
+            Aantal succesvol gepushte URLs. Markeert elke URL als pushed/failed
+            in de priority_urls tabel.
+        """
+        if not priority_rows:
+            return 0
+
+        used_today = get_daily_api_usage("indexing")
+        remaining = INDEXING_DAILY_LIMIT - used_today
+        if remaining <= 0:
+            logger.warning(
+                f"Dagelijks push limiet bereikt ({used_today}/{INDEXING_DAILY_LIMIT})"
+            )
+            return 0
+
+        to_push = priority_rows[:remaining]
+        success_count = 0
+        shop_counts: dict[str, int] = {}
+
+        for row in to_push:
+            url = row["url"]
+            shop_id = row.get("shop_id")
+            priority_id = row["id"]
+
+            ok = self.push_url(url)
+            if ok:
+                mark_priority_pushed(priority_id, success=True)
+                if shop_id:
+                    mark_as_pushed(shop_id, url)
+                    shop_counts[shop_id] = shop_counts.get(shop_id, 0) + 1
+                else:
+                    shop_counts["__priority_unmapped__"] = (
+                        shop_counts.get("__priority_unmapped__", 0) + 1
+                    )
+                success_count += 1
+                logger.info(f"  [PUSHED][priority] {url}")
+            else:
+                mark_priority_pushed(priority_id, success=False, error="API call failed")
+                logger.warning(f"  [FAILED][priority] {url}")
+
+            time.sleep(INDEXING_DELAY_SECONDS)
+
+        for sid, count in shop_counts.items():
+            log_api_usage(sid, "indexing", count)
+
+        return success_count
 
     def push_batch(self, urls: list[dict]) -> int:
         """Push een batch niet-geIndexeerde URLs.

@@ -7,11 +7,18 @@ import click
 
 from config.shops import get_enabled_shops, get_shop_by_id
 from db.models import init_db
-from db.queries import get_all_shops_summary, get_shop_summary, get_daily_api_usage, save_daily_snapshot
+from db.queries import (
+    get_all_shops_summary,
+    get_shop_summary,
+    get_daily_api_usage,
+    save_daily_snapshot,
+    get_priority_schedule_summary,
+)
 from collectors.sitemap import SitemapCollector
 from inspectors.url_inspector import URLInspector
 from pushers.indexing_pusher import IndexingPusher
-from scheduler.strategy import get_inspection_urls, get_push_urls
+from scheduler.strategy import get_inspection_urls, get_push_urls, get_priority_push_urls
+from scheduler.priority import parse_file, parse_text, schedule_priority_urls
 
 
 def setup_logging(verbose: bool = False):
@@ -182,6 +189,86 @@ def status():
     click.echo(f"\n  Totaal: {total_inspections} inspections, {total_pushes} pushes")
 
 
+@cli.group()
+def priority():
+    """Beheer priority URLs: handmatig versneld indexeren."""
+    pass
+
+
+@priority.command("add")
+@click.option(
+    "--file",
+    "-f",
+    "file_path",
+    type=click.Path(exists=True, dir_okay=False),
+    help="Pad naar een .txt / .csv / .xlsx bestand met URLs.",
+)
+@click.option(
+    "--urls",
+    "-u",
+    "urls_arg",
+    default=None,
+    help="Direct opgegeven URLs (comma-separated of newline-separated).",
+)
+@click.option(
+    "--source",
+    "-s",
+    default="cli",
+    help="Tag waarmee deze batch is opgenomen (default: cli).",
+)
+def priority_add(file_path, urls_arg, source):
+    """Voeg URLs toe aan de priority push-wachtrij.
+
+    Voorbeelden:
+        python cli.py priority add -f exit_blog_urls.xlsx
+        python cli.py priority add -u "https://shop.nl/a, https://shop.nl/b"
+    """
+    if not file_path and not urls_arg:
+        click.echo("Geef minstens --file of --urls op.")
+        sys.exit(1)
+
+    urls: list[str] = []
+    if file_path:
+        urls.extend(parse_file(file_path))
+    if urls_arg:
+        urls.extend(parse_text(urls_arg))
+
+    if not urls:
+        click.echo("Geen geldige URLs gevonden in de input.")
+        sys.exit(1)
+
+    result = schedule_priority_urls(urls, source=source)
+    click.echo(f"\nIngepland: {result['inserted']} URLs")
+    click.echo(f"  Aangeboden:        {result['received']}")
+    click.echo(f"  Na dedup:          {result['deduped']}")
+    click.echo(f"  Duplicaat in db:   {result['skipped_duplicate']}")
+    click.echo(f"  Zonder shop-match: {result['unmapped']}")
+    if result["unmapped_sample"]:
+        click.echo("  Voorbeeld(en) zonder shop-match:")
+        for sample in result["unmapped_sample"]:
+            click.echo(f"    - {sample}")
+    if result["schedule"]:
+        click.echo("\nVerdeling over dagen:")
+        for day, count in sorted(result["schedule"].items()):
+            click.echo(f"  {day}: {count}")
+
+
+@priority.command("list")
+@click.option("--days", "-d", default=14, type=int, help="Aantal dagen vooruit (default: 14).")
+def priority_list(days):
+    """Toon geplande priority pushes per dag."""
+    summary = get_priority_schedule_summary(days_ahead=days)
+    if not summary:
+        click.echo("Geen priority URLs gepland.")
+        return
+    click.echo(f"\n{'Datum':<12} {'Pending':>8} {'Pushed':>8} {'Failed':>8}")
+    click.echo("-" * 40)
+    for row in summary:
+        click.echo(
+            f"{row['scheduled_date']:<12} {row['pending']:>8} {row['pushed']:>8} {row['failed']:>8}"
+        )
+
+
 @cli.command()
 def run():
     """Voer de volledige pipeline uit: scan -> inspect -> push -> snapshot."""
@@ -201,9 +288,15 @@ def run():
         if urls:
             inspector.inspect_batch(s.shop_id, urls, s.gsc_site_url, s.language_code)
 
-    # Stap 3: Push niet-geIndexeerde URLs
+    # Stap 3: Push niet-geIndexeerde URLs (priority eerst, dan regulier)
     logger.info("=== STAP 3: URLs pushen ===")
     pusher = IndexingPusher()
+
+    priority_urls = get_priority_push_urls()
+    if priority_urls:
+        logger.info(f"  Priority queue: {len(priority_urls)} URLs")
+        pusher.push_priority_batch(priority_urls)
+
     push_urls = get_push_urls()
     if push_urls:
         pusher.push_batch(push_urls)

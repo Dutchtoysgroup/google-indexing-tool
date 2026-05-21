@@ -310,6 +310,215 @@ def get_shop_summary(shop_id: str) -> dict:
         conn.close()
 
 
+def insert_priority_urls(
+    rows: list[tuple[str, str | None]],
+    source: str = "manual",
+    daily_limit: int = 200,
+    start_date: date | None = None,
+) -> dict:
+    """Plan priority URLs in voor toekomstige push-runs.
+
+    Verdeelt URLs over opeenvolgende dagen wanneer het aantal het dagelijkse
+    push-quotum overschrijdt. Eerst wordt de resterende ruimte voor vandaag
+    benut (gebaseerd op reeds geplande priority URLs voor vandaag), daarna
+    volgen volle dagen tot het lijstje op is.
+
+    Args:
+        rows: lijst van (url, shop_id) tuples. shop_id mag None zijn — wordt
+              dan automatisch gedetecteerd uit het domein.
+        source: vrije tag (bijv. 'manual', 'excel', 'dashboard').
+        daily_limit: het maximum aantal priority URLs dat per dag mag worden
+                     ingepland (en dus per dag wordt gepusht). Standaard 200,
+                     gelijk aan Google's dagelijks push-quotum.
+        start_date: optioneel startdatum (default: vandaag).
+
+    Returns:
+        Dict met aantal ingevoegde URLs en de spreiding over dagen.
+    """
+    if not rows:
+        return {"inserted": 0, "skipped_duplicate": 0, "schedule": {}}
+
+    if start_date is None:
+        start_date = date.today()
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT scheduled_date, COUNT(*)::int AS cnt
+                FROM priority_urls
+                WHERE scheduled_date >= %s AND status = 'pending'
+                GROUP BY scheduled_date
+                """,
+                (start_date,),
+            )
+            existing = {row["scheduled_date"]: row["cnt"] for row in cur.fetchall()}
+
+            inserted = 0
+            skipped = 0
+            schedule: dict[str, int] = {}
+            current_day = start_date
+
+            for url, shop_id in rows:
+                while existing.get(current_day, 0) >= daily_limit:
+                    current_day = current_day + timedelta(days=1)
+
+                try:
+                    cur.execute(
+                        """
+                        INSERT INTO priority_urls
+                            (url, shop_id, scheduled_date, source)
+                        VALUES (%s, %s, %s, %s)
+                        ON CONFLICT (url, scheduled_date) DO NOTHING
+                        RETURNING id
+                        """,
+                        (url, shop_id, current_day, source),
+                    )
+                    result = cur.fetchone()
+                    if result:
+                        inserted += 1
+                        existing[current_day] = existing.get(current_day, 0) + 1
+                        day_key = current_day.isoformat()
+                        schedule[day_key] = schedule.get(day_key, 0) + 1
+                    else:
+                        skipped += 1
+                except Exception:
+                    skipped += 1
+
+        conn.commit()
+        return {
+            "inserted": inserted,
+            "skipped_duplicate": skipped,
+            "schedule": schedule,
+        }
+    finally:
+        conn.close()
+
+
+def get_priority_urls_for_today(limit: int | None = None) -> list[dict]:
+    """Haal pending priority URLs op voor vandaag (inclusief achterstallige)."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            if limit is None:
+                cur.execute(
+                    """
+                    SELECT id, url, shop_id, scheduled_date
+                    FROM priority_urls
+                    WHERE status = 'pending' AND scheduled_date <= CURRENT_DATE
+                    ORDER BY scheduled_date ASC, id ASC
+                    """
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT id, url, shop_id, scheduled_date
+                    FROM priority_urls
+                    WHERE status = 'pending' AND scheduled_date <= CURRENT_DATE
+                    ORDER BY scheduled_date ASC, id ASC
+                    LIMIT %s
+                    """,
+                    (limit,),
+                )
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def mark_priority_pushed(priority_id: int, success: bool, error: str | None = None):
+    """Markeer een priority URL als gepusht (of failed)."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE priority_urls SET
+                    status = %s,
+                    push_error = %s,
+                    pushed_at = NOW()
+                WHERE id = %s
+                """,
+                ("pushed" if success else "failed", error, priority_id),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_priority_schedule_summary(days_ahead: int = 30) -> list[dict]:
+    """Aantal pending/pushed/failed priority URLs per dag, voor dashboard."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    scheduled_date::text AS scheduled_date,
+                    COUNT(*) FILTER (WHERE status = 'pending')::int  AS pending,
+                    COUNT(*) FILTER (WHERE status = 'pushed')::int   AS pushed,
+                    COUNT(*) FILTER (WHERE status = 'failed')::int   AS failed
+                FROM priority_urls
+                WHERE scheduled_date >= CURRENT_DATE - INTERVAL '7 days'
+                  AND scheduled_date <= CURRENT_DATE + make_interval(days => %s)
+                GROUP BY scheduled_date
+                ORDER BY scheduled_date ASC
+                """,
+                (days_ahead,),
+            )
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def get_priority_urls_for_date(scheduled_date: date, status: str | None = None) -> list[dict]:
+    """Alle priority URLs voor een specifieke datum, optioneel gefilterd op status."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            if status:
+                cur.execute(
+                    """
+                    SELECT id, url, shop_id, scheduled_date::text, status,
+                           pushed_at::text, push_error, source, created_at::text
+                    FROM priority_urls
+                    WHERE scheduled_date = %s AND status = %s
+                    ORDER BY id ASC
+                    """,
+                    (scheduled_date, status),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT id, url, shop_id, scheduled_date::text, status,
+                           pushed_at::text, push_error, source, created_at::text
+                    FROM priority_urls
+                    WHERE scheduled_date = %s
+                    ORDER BY id ASC
+                    """,
+                    (scheduled_date,),
+                )
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def delete_priority_url(priority_id: int) -> bool:
+    """Verwijder een priority URL (alleen als pending)."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM priority_urls WHERE id = %s AND status = 'pending'",
+                (priority_id,),
+            )
+            deleted = cur.rowcount > 0
+        conn.commit()
+        return deleted
+    finally:
+        conn.close()
+
+
 def get_all_shops_summary() -> list[dict]:
     """Haal samenvatting op voor alle shops."""
     conn = get_connection()

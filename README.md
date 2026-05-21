@@ -361,6 +361,11 @@ Alle commando's draai je vanuit de projectmap, met `DATABASE_URL` ingesteld en `
 | `python3 cli.py report --shop SHOP_ID` | Detailrapport voor één shop |
 | `python3 cli.py status` | API-gebruik van vandaag |
 | `python3 cli.py run` | Volledige pipeline (scan → inspect → push → snapshot) |
+| `python3 cli.py priority add -f urls.xlsx` | Zet URLs uit txt/csv/xlsx op de priority push-wachtrij |
+| `python3 cli.py priority add -u "https://a.nl, https://b.nl"` | Zet URLs direct (string) op de priority wachtrij |
+| `python3 cli.py priority list` | Toon hoeveel priority URLs er per dag gepland staan |
+
+Priority URLs gaan voor in de wachtrij maar verbruiken hetzelfde dagelijkse push-quotum van 200. Bij meer dan 200 URLs wordt de rest automatisch over opeenvolgende dagen verdeeld.
 
 Voeg `--verbose` toe (vóór het commando) voor uitgebreidere logging:
 ```bash

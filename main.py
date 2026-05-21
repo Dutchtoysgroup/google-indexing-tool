@@ -14,7 +14,7 @@ from db.queries import save_daily_snapshot, get_all_shops_summary
 from collectors.sitemap import SitemapCollector
 from inspectors.url_inspector import URLInspector
 from pushers.indexing_pusher import IndexingPusher
-from scheduler.strategy import get_inspection_urls, get_push_urls
+from scheduler.strategy import get_inspection_urls, get_push_urls, get_priority_push_urls
 
 
 def setup_logging():
@@ -126,6 +126,17 @@ def main():
     )
     try:
         pusher = IndexingPusher()
+
+        # Stap 3a: priority URLs (handmatig versneld). Verbruikt hetzelfde
+        # dagelijkse quotum maar gaat voor in de wachtrij.
+        priority_urls = get_priority_push_urls()
+        if priority_urls:
+            logger.info(f"  Priority queue: {len(priority_urls)} URLs")
+            pusher.push_priority_batch(priority_urls)
+        else:
+            logger.info("  Geen priority URLs in de wachtrij")
+
+        # Stap 3b: reguliere niet-geïndexeerde URLs.
         push_urls = get_push_urls()
         if push_urls:
             logger.info(f"  {len(push_urls)} URLs te pushen")

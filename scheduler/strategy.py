@@ -16,6 +16,7 @@ from db.queries import (
     get_urls_stale_inspection,
     get_urls_to_push,
     get_daily_api_usage,
+    get_priority_urls_for_today,
 )
 
 logger = logging.getLogger(__name__)
@@ -66,10 +67,34 @@ def get_inspection_urls(shop_id: str) -> list[dict]:
     return urls
 
 
+def get_priority_push_urls(budget: int | None = None) -> list[dict]:
+    """Pending priority URLs voor vandaag (en achterstallige van eerdere dagen).
+
+    Deze URLs verbruiken het reguliere dagelijkse push-quotum (200/dag) en gaan
+    voor in de wachtrij. Wanneer `budget` is opgegeven wordt de lijst beperkt
+    tot dat aantal.
+    """
+    used = get_daily_api_usage("indexing")
+    remaining = INDEXING_DAILY_LIMIT - used
+    if remaining <= 0:
+        return []
+
+    cap = remaining if budget is None else min(remaining, budget)
+    if cap <= 0:
+        return []
+
+    urls = get_priority_urls_for_today(limit=cap)
+    if urls:
+        logger.info(f"  {len(urls)} priority URLs geselecteerd om te pushen")
+    return urls
+
+
 def get_push_urls() -> list[dict]:
     """Bepaal welke URLs vandaag gepusht moeten worden.
 
-    Respecteert het dagelijks limiet van 200 URLs totaal.
+    Respecteert het dagelijks limiet van 200 URLs totaal. Priority URLs zijn
+    al apart afgehandeld door `get_priority_push_urls`, deze functie levert
+    alleen de reguliere niet-geïndexeerde URLs.
     """
     used = get_daily_api_usage("indexing")
     budget = INDEXING_DAILY_LIMIT - used

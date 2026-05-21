@@ -75,3 +75,25 @@ def get_enabled_shops() -> list[Shop]:
 
 def get_shop_by_id(shop_id: str) -> Shop | None:
     return next((s for s in SHOPS if s.shop_id == shop_id), None)
+
+
+def get_shop_for_url(url: str) -> Shop | None:
+    """Vind de shop waar deze URL bij hoort op basis van het domein."""
+    if not url or "://" not in url:
+        return None
+    # Pak alleen de host (zonder pad/query).
+    try:
+        host = url.split("://", 1)[1].split("/", 1)[0].lower()
+    except IndexError:
+        return None
+    # Eerst exact match op host vs base_url's host.
+    for shop in SHOPS:
+        base_host = shop.base_url.split("://", 1)[1].split("/", 1)[0].lower()
+        if host == base_host:
+            return shop
+    # Anders: substring match (bv. URL heeft 'www.', shop niet).
+    for shop in SHOPS:
+        base_host = shop.base_url.split("://", 1)[1].split("/", 1)[0].lower()
+        if host.endswith(base_host) or base_host.endswith(host):
+            return shop
+    return None
