@@ -1,37 +1,16 @@
 name: Daily Indexing Pipeline
 
 on:
-  # Standaard staat alleen handmatig triggeren aan. Wil je een dagelijkse run?
-  # Voeg dan een `schedule:` blok toe, bijvoorbeeld:
-  #   schedule:
-  #     - cron: "0 2 * * *"   # 02:00 UTC, elke dag
-  #
-  # Op GitHub Actions hanteren we een tijdsbudget (TIME_BUDGET_MINUTES hieronder)
-  # voor scan+inspect; push en snapshot lopen daarna altijd door, zodat het
-  # dagelijkse push-budget van Google (200/dag) volledig benut wordt.
   workflow_dispatch: {}
 
 jobs:
   indexing:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
-
+    timeout-minutes: 60
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-          cache: 'pip'
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Run indexing pipeline
+      - uses: actions/checkout@v4
+      - name: Trigger private Azure pipeline WebJob
         env:
-          DATABASE_URL: ${{ secrets.INDEXING_DATABASE_URL }}
+          AZURE_WEBAPP_PUBLISH_PROFILE: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
           GOOGLE_SERVICE_ACCOUNT_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY }}
-          TIME_BUDGET_MINUTES: "30"
-        run: python main.py
+        run: python scripts/trigger_azure_webjob.py

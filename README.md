@@ -1,5 +1,12 @@
 # Google Indexing Tool
 
+> **Productie sinds 18 september 2026:** deze pipeline draait als Azure
+> WebJob op `dtg-google-indexing-pipeline-weu` in `Marketing-Dashboard-RG`.
+> Zij schrijft naar `dtg_data.app_indexing` op de centrale PostgreSQL-server.
+> De handmatige GitHub-workflow triggert de WebJob en geeft de bestaande Google
+> service-account-sleutel alleen voor die run door. Oude Neon-instructies
+> hieronder zijn historisch en gelden niet meer voor productie.
+
 Automatische tool die de indexeringsstatus van je webshops in Google monitort en niet-geïndexeerde URLs naar Google pusht via de officiële Indexing API.
 
 De tool is generiek: of je nu één webshop hebt of er twintig, je vult zelf je domeinen, talen en Google-account in.

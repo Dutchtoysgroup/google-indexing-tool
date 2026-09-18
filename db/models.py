@@ -1,7 +1,11 @@
-"""Database schema en connectie voor Neon PostgreSQL."""
+"""Database schema en connectie voor Azure PostgreSQL."""
 
 import psycopg2
+import certifi
 from psycopg2.extras import RealDictCursor
+from azure.identity import DefaultAzureCredential
+from urllib.parse import urlparse, unquote
+import os
 
 from config.settings import DATABASE_URL
 
@@ -73,6 +77,24 @@ def get_connection():
     """Maak een database connectie."""
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL is niet geconfigureerd")
+    if os.environ.get("DATABASE_AUTH") == "entra":
+        url = urlparse(DATABASE_URL)
+        if url.password:
+            raise RuntimeError("Entra-verbinding mag geen wachtwoord bevatten")
+        token = DefaultAzureCredential().get_token(
+            "https://ossrdbms-aad.database.windows.net/.default"
+        ).token
+        return psycopg2.connect(
+            host=url.hostname,
+            port=url.port or 5432,
+            dbname=url.path.lstrip("/"),
+            user=unquote(url.username or ""),
+            password=token,
+            sslmode="verify-full",
+            sslrootcert=certifi.where(),
+            options="-c search_path=app_indexing",
+            cursor_factory=RealDictCursor,
+        )
     return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
 
 
