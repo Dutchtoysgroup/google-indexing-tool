@@ -8,7 +8,20 @@ cd "$work_dir"
 python_bin="$work_dir/antenv/bin/python"
 
 if [[ "${WEBJOBS_COMMAND_ARGUMENTS:-}" == "smoke" ]]; then
-  "$python_bin" -c 'from db.models import get_connection; c=get_connection(); print(c.cursor().execute("SELECT 1") or "database ok"); c.close()'
+  "$python_bin" - <<'PY'
+from db.models import get_connection
+
+connection = get_connection()
+try:
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT count(*) FROM urls")
+        print("urls:", cursor.fetchone()["count"])
+        cursor.execute("UPDATE push_priority SET priority = priority WHERE FALSE")
+    connection.rollback()
+    print("database read/write grants ok")
+finally:
+    connection.close()
+PY
   exit 0
 fi
 
