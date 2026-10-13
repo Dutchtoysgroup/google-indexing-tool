@@ -53,26 +53,57 @@ def upsert_urls_batch(shop_id: str, urls: list[tuple[str, str | None]]):
         conn.close()
 
 
-def mark_missing_urls(shop_id: str, current_urls: set[str]):
-    """Markeer URLs die niet meer in de sitemap staan."""
+def apply_sitemap_snapshot(
+    shop_id: str, urls: list[tuple[str, str | None]], *, complete: bool,
+):
+    """Stage één scan; publiceer en detecteer verwijderingen atomair bij succes.
+
+    De tijdelijke tabel is verbindingsgebonden en verdwijnt bij commit/rollback.
+    Een incomplete scan wijzigt ook last_sitemap_seen en url_type niet.
+    """
+    if complete and not urls:
+        raise ValueError("Een lege sitemap mag geen volledige snapshot vervangen")
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT url FROM urls WHERE shop_id = %s AND removed_from_sitemap = FALSE",
-                (shop_id,),
-            )
-            db_urls = {row["url"] for row in cur.fetchall()}
-            missing = db_urls - current_urls
-            if missing:
-                cur.execute(
-                    """
-                    UPDATE urls SET removed_from_sitemap = TRUE
-                    WHERE shop_id = %s AND url = ANY(%s)
-                    """,
-                    (shop_id, list(missing)),
+            cur.execute("""
+                CREATE TEMP TABLE sitemap_stage (
+                    url TEXT PRIMARY KEY,
+                    url_type TEXT
+                ) ON COMMIT DROP
+            """)
+            if urls:
+                from psycopg2.extras import execute_values
+                # Een URL kan in meerdere child-sitemaps voorkomen.
+                unique_urls = {}
+                for url, url_type in urls:
+                    unique_urls[url] = url_type or unique_urls.get(url)
+                execute_values(
+                    cur,
+                    "INSERT INTO sitemap_stage (url, url_type) VALUES %s",
+                    list(unique_urls.items()),
                 )
+            if complete:
+                cur.execute("""
+                    INSERT INTO urls (shop_id, url, url_type, last_sitemap_seen)
+                    SELECT %s, url, url_type, NOW() FROM sitemap_stage
+                    ON CONFLICT (shop_id, url)
+                    DO UPDATE SET
+                        last_sitemap_seen = NOW(),
+                        url_type = COALESCE(EXCLUDED.url_type, urls.url_type),
+                        removed_from_sitemap = FALSE
+                """, (shop_id,))
+                cur.execute("""
+                    UPDATE urls SET removed_from_sitemap = TRUE
+                    WHERE shop_id = %s AND removed_from_sitemap = FALSE
+                      AND NOT EXISTS (
+                          SELECT 1 FROM sitemap_stage WHERE sitemap_stage.url = urls.url
+                      )
+                """, (shop_id,))
         conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import dataclass, field
+from urllib.parse import urlparse
+from xml.etree import ElementTree
 
 import requests
-from bs4 import BeautifulSoup
 
 from config.shops import Shop
-from db.queries import upsert_urls_batch, mark_missing_urls
+from db.queries import apply_sitemap_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -28,104 +30,113 @@ HEADERS = {
 }
 
 
+@dataclass
+class SitemapResult:
+    """URLs plus volledigheid van de volledige (eventueel geneste) sitemapboom."""
+
+    urls: dict[str, list[str]] = field(default_factory=dict)
+    failed_sitemaps: list[str] = field(default_factory=list)
+
+    @property
+    def complete(self) -> bool:
+        return not self.failed_sitemaps
+
+    @property
+    def total(self) -> int:
+        return sum(len(urls) for urls in self.urls.values())
+
+
 class SitemapCollector:
-    """Verzamelt URLs uit sitemaps van een webshop."""
+    """Verzamelt URLs; publiceert uitsluitend volledige snapshots."""
 
     def __init__(self, timeout: int = 30):
         self.timeout = timeout
         self.session = requests.Session()
         self.session.headers.update(HEADERS)
 
-    def collect(self, shop: Shop) -> dict[str, list[str]]:
-        """Haal alle URLs op uit de sitemaps van een shop.
-
-        Returns:
-            Dict met url_type -> [urls]
-        """
+    def collect(self, shop: Shop) -> SitemapResult:
         logger.info(f"Scanning sitemaps voor {shop.name} ({shop.base_url})")
+        result = self._parse_sitemap(
+            f"{shop.base_url.rstrip('/')}/sitemap.xml", shop.base_url
+        )
+        pairs = [
+            (url, None if url_type == "other" else url_type)
+            for url_type, urls in result.urls.items()
+            for url in urls
+        ]
+        apply_sitemap_snapshot(shop.shop_id, pairs, complete=result.complete)
+        if result.complete:
+            logger.info(f"  Volledig: {result.total} URLs voor {shop.name}")
+        else:
+            logger.warning(
+                "Sitemapscan incompleet voor %s: %s; %s URLs verzameld, "
+                "bestaande URLs ongewijzigd, verwijderdetectie overgeslagen",
+                shop.name, ", ".join(result.failed_sitemaps), result.total,
+            )
+        return result
 
-        # Stap 1: Haal sitemap index op
-        sitemap_urls = self._get_sitemap_index(shop.base_url)
-        if not sitemap_urls:
-            # Probeer directe sitemap URL
-            sitemap_urls = [f"{shop.base_url}/sitemap.xml"]
-            logger.info("Geen sitemap index gevonden, probeer directe sitemap")
+    def _parse_sitemap(
+        self, sitemap_url: str, base_url: str,
+        ancestors: frozenset[str] = frozenset(),
+        inherited_type: str | None = None,
+    ) -> SitemapResult:
+        """Lees strikt XML en draag fouten uit elke child naar de root mee."""
+        result = SitemapResult()
 
-        # Stap 2: Parse alle child sitemaps
-        all_urls: dict[str, list[str]] = {}
-        all_url_pairs: list[tuple[str, str | None]] = []
+        def fail(reason: str) -> SitemapResult:
+            logger.error("Onvolledige sitemap %s: %s", sitemap_url, reason)
+            result.failed_sitemaps.append(sitemap_url)
+            return result
 
-        for sitemap_url in sitemap_urls:
-            url_type = self._detect_type(sitemap_url)
-            urls = self._parse_sitemap(sitemap_url, shop.base_url)
-            if urls:
-                all_urls.setdefault(url_type or "other", []).extend(urls)
-                all_url_pairs.extend([(url, url_type) for url in urls])
-                logger.info(f"  {sitemap_url}: {len(urls)} URLs (type: {url_type or 'other'})")
-
-        # Stap 3: Batch upsert in database
-        if all_url_pairs:
-            upsert_urls_batch(shop.shop_id, all_url_pairs)
-
-        # Stap 4: Markeer verdwenen URLs
-        current_urls = {url for url, _ in all_url_pairs}
-        mark_missing_urls(shop.shop_id, current_urls)
-
-        total = sum(len(v) for v in all_urls.values())
-        logger.info(f"  Totaal: {total} URLs voor {shop.name}")
-
-        return all_urls
-
-    def _get_sitemap_index(self, base_url: str) -> list[str]:
-        """Haal de sitemap index op en retourneer child sitemap URLs."""
-        index_url = f"{base_url}/sitemap.xml"
-        try:
-            resp = self.session.get(index_url, timeout=self.timeout)
-            resp.raise_for_status()
-        except requests.RequestException as e:
-            logger.error(f"Fout bij ophalen sitemap index {index_url}: {e}")
-            return []
-
-        soup = BeautifulSoup(resp.text, "lxml-xml")
-        sitemaps = []
-        for sitemap in soup.find_all("sitemap"):
-            loc = sitemap.find("loc")
-            if loc and loc.text:
-                sitemaps.append(loc.text.strip())
-
-        if sitemaps:
-            logger.info(f"  Sitemap index: {len(sitemaps)} child sitemaps gevonden")
-        return sitemaps
-
-    def _parse_sitemap(self, sitemap_url: str, base_url: str) -> list[str]:
-        """Parse een enkele sitemap en retourneer URLs."""
+        if sitemap_url in ancestors:
+            return fail("cyclische sitemapindex")
+        if len(ancestors) >= 50:
+            return fail("maximale sitemapdiepte bereikt")
         try:
             resp = self.session.get(sitemap_url, timeout=self.timeout)
             resp.raise_for_status()
-        except requests.RequestException as e:
-            logger.error(f"Fout bij ophalen sitemap {sitemap_url}: {e}")
-            return []
+        except requests.RequestException as exc:
+            return fail(str(exc))
 
-        soup = BeautifulSoup(resp.text, "lxml-xml")
+        try:
+            root = ElementTree.fromstring(resp.content)
+        except ElementTree.ParseError as exc:
+            return fail(f"ongeldige XML: {exc}")
 
-        # Check of dit ook een sitemap index is (geneste indexes)
-        nested_sitemaps = soup.find_all("sitemap")
-        if nested_sitemaps:
-            urls = []
-            for sm in nested_sitemaps:
-                loc = sm.find("loc")
-                if loc and loc.text:
-                    urls.extend(self._parse_sitemap(loc.text.strip(), base_url))
-            return urls
+        namespace = "{http://www.sitemaps.org/schemas/sitemap/0.9}"
+        prefix = namespace if root.tag.startswith(namespace) else ""
+        is_index = root.tag == f"{prefix}sitemapindex"
+        if not is_index and root.tag != f"{prefix}urlset":
+            return fail("geen sitemapindex of urlset")
 
-        # Parse URL entries
-        urls = []
-        for loc in soup.find_all("loc"):
-            url = loc.text.strip()
-            if url.startswith(base_url):
-                urls.append(url)
+        entries = root.findall(f"{prefix}{'sitemap' if is_index else 'url'}")
+        if not entries:
+            return fail("lege sitemap")
 
-        return list(set(urls))
+        url_type = self._detect_type(sitemap_url) or inherited_type
+        base = base_url.rstrip("/")
+        for entry in entries:
+            locations = entry.findall(f"{prefix}loc")
+            location = (locations[0].text or "").strip() if len(locations) == 1 else ""
+            parsed = urlparse(location)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                fail("ontbrekende of ongeldige loc")
+                continue
+            if is_index:
+                child = self._parse_sitemap(
+                    location, base_url, ancestors | {sitemap_url}, url_type
+                )
+                for child_type, urls in child.urls.items():
+                    result.urls.setdefault(child_type, []).extend(urls)
+                result.failed_sitemaps.extend(child.failed_sitemaps)
+            elif location == base or location.startswith(base + "/"):
+                result.urls.setdefault(url_type or "other", []).append(location)
+
+        if not result.urls and result.complete:
+            fail("geen URLs voor deze shop")
+        result.urls = {key: list(dict.fromkeys(urls)) for key, urls in result.urls.items()}
+        result.failed_sitemaps = list(dict.fromkeys(result.failed_sitemaps))
+        return result
 
     def _detect_type(self, sitemap_url: str) -> str | None:
         """Detecteer het URL type op basis van de sitemap bestandsnaam."""

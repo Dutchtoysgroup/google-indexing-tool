@@ -54,13 +54,19 @@ def scan(shop):
         shops = get_enabled_shops()
 
     total = 0
+    incomplete_scans = []
     for s in shops:
-        urls = collector.collect(s)
-        count = sum(len(v) for v in urls.values())
+        result = collector.collect(s)
+        count = result.total
+        if not result.complete:
+            incomplete_scans.append(s.shop_id)
         total += count
-        click.echo(f"  {s.name}: {count} URLs")
+        status = "volledig" if result.complete else "INCOMPLEET; bestaande URLs behouden"
+        click.echo(f"  {s.name}: {count} URLs ({status})")
 
     click.echo(f"\nTotaal: {total} URLs verzameld uit {len(shops)} shops")
+    if incomplete_scans:
+        raise click.ClickException("Sitemapscan incompleet: " + ", ".join(incomplete_scans))
 
 
 @cli.command()
@@ -277,8 +283,11 @@ def run():
     # Stap 1: Scan sitemaps
     logger.info("=== STAP 1: Sitemaps scannen ===")
     collector = SitemapCollector()
+    incomplete_scans = []
     for s in get_enabled_shops():
-        collector.collect(s)
+        result = collector.collect(s)
+        if not result.complete:
+            incomplete_scans.append(s.shop_id)
 
     # Stap 2: Inspecteer URLs
     logger.info("=== STAP 2: URLs inspecteren ===")
@@ -315,6 +324,8 @@ def run():
         pct = f"{(indexed / total * 100):.1f}%" if total > 0 else "N/A"
         logger.info(f"  {s['shop_id']}: {total} URLs, {indexed} indexed ({pct})")
 
+    if incomplete_scans:
+        raise click.ClickException("Pipeline incompleet: sitemapscans voor " + ", ".join(incomplete_scans))
     logger.info("Pipeline voltooid.")
 
 

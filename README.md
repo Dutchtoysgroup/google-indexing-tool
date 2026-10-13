@@ -13,6 +13,37 @@ De tool is generiek: of je nu één webshop hebt of er twintig, je vult zelf je 
 
 ---
 
+## Veilige sitemapscans
+
+Elke scan geeft URLs én een volledigheidsstatus terug. Een HTTP-fout (zoals een
+503), timeout, lege sitemap, ongeldige XML of ontbrekende URL in een sitemap
+maakt de scan incompleet. Dit geldt ook voor fouten in geneste child-sitemaps.
+Een directe `urlset` op `/sitemap.xml` wordt eveneens ondersteund.
+
+Verzamelde URLs gaan eerst naar een tijdelijke PostgreSQL-stagingtabel. Alleen
+na een volledige scan worden de URLs bijgewerkt en ontbrekende URLs gemarkeerd,
+binnen dezelfde transactie. Bij een incomplete scan blijven alle bestaande
+URL-gegevens ongewijzigd. Een lege sitemap wordt uit voorzorg als incompleet
+behandeld; daarmee kan een lege respons nooit alle URLs als verdwenen markeren.
+De databasegebruiker heeft hiervoor het PostgreSQL-recht `TEMPORARY` nodig.
+
+`scan`, `run` en `main.py` melden incomplete scans expliciet en eindigen met
+exitcode 1. De volledige pipeline rondt de overige stappen wel af met de laatst
+bekende URL-gegevens. Een volgende succesvolle scan hervat de normale verwerking.
+
+Offline regressietests (zonder Google-credentials of `shops.json`):
+
+```bash
+python -m unittest discover -v
+# Inclusief transactietests tegen een aparte lokale PostgreSQL-testdatabase:
+TEST_DATABASE_URL="postgresql:///indexing_test" python -m unittest discover -v
+```
+
+De databasetests gebruiken per test een tijdelijk schema en raken geen bestaande
+tabellen aan. Zonder `TEST_DATABASE_URL` worden alleen die tests overgeslagen.
+
+---
+
 ## Inhoudsopgave
 
 1. [Wat doet deze tool?](#wat-doet-deze-tool)

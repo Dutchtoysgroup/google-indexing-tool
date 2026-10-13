@@ -77,16 +77,21 @@ def main():
     # Stap 1: Sitemaps scannen
     logger.info("--- Stap 1: Sitemaps scannen ---")
     collector = SitemapCollector()
-    for shop in shops:
+    incomplete_scans = []
+    for index, shop in enumerate(shops):
         if over_budget():
             logger.warning(
                 f"Tijdsbudget verstreken na {elapsed() / 60:.1f} min — "
                 f"scan afgebroken; resterende shops worden overgeslagen"
             )
+            incomplete_scans.extend(s.shop_id for s in shops[index:])
             break
         try:
-            collector.collect(shop)
+            result = collector.collect(shop)
+            if not result.complete:
+                incomplete_scans.append(shop.shop_id)
         except Exception as e:
+            incomplete_scans.append(shop.shop_id)
             logger.error(f"Fout bij scannen {shop.name}: {e}")
 
     # Stap 2: URLs inspecteren
@@ -168,8 +173,12 @@ def main():
 
     overall_pct = f"{(indexed_all / total_all * 100):.1f}%" if total_all > 0 else "N/A"
     logger.info(f"  TOTAAL: {total_all} URLs, {indexed_all} indexed ({overall_pct})")
+    if incomplete_scans:
+        logger.warning("Pipeline incompleet: sitemapscans voor %s", ", ".join(incomplete_scans))
+        return 1
     logger.info(f"Pipeline voltooid in {elapsed() / 60:.1f} min.")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
