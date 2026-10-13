@@ -11,13 +11,12 @@ from db.queries import (
     get_all_shops_summary,
     get_shop_summary,
     get_daily_api_usage,
-    save_daily_snapshot,
     get_priority_schedule_summary,
 )
 from collectors.sitemap import SitemapCollector
 from inspectors.url_inspector import URLInspector
 from pushers.indexing_pusher import IndexingPusher
-from scheduler.strategy import get_inspection_urls, get_push_urls, get_priority_push_urls
+from scheduler.strategy import get_inspection_urls, get_push_urls
 from scheduler.priority import parse_file, parse_text, schedule_priority_urls
 
 
@@ -32,10 +31,12 @@ def setup_logging(verbose: bool = False):
 
 @click.group()
 @click.option("--verbose", "-v", is_flag=True, help="Verbose logging")
-def cli(verbose):
+@click.pass_context
+def cli(ctx, verbose):
     """Google Indexing Tool — monitor en push URLs naar de Google Indexing API."""
     setup_logging(verbose)
-    init_db()
+    if ctx.invoked_subcommand != "run":
+        init_db()
 
 
 @cli.command()
@@ -278,55 +279,9 @@ def priority_list(days):
 @cli.command()
 def run():
     """Voer de volledige pipeline uit: scan -> inspect -> push -> snapshot."""
-    logger = logging.getLogger("pipeline")
+    from main import main
 
-    # Stap 1: Scan sitemaps
-    logger.info("=== STAP 1: Sitemaps scannen ===")
-    collector = SitemapCollector()
-    incomplete_scans = []
-    for s in get_enabled_shops():
-        result = collector.collect(s)
-        if not result.complete:
-            incomplete_scans.append(s.shop_id)
-
-    # Stap 2: Inspecteer URLs
-    logger.info("=== STAP 2: URLs inspecteren ===")
-    inspector = URLInspector()
-    for s in get_enabled_shops():
-        urls = get_inspection_urls(s.shop_id)
-        if urls:
-            inspector.inspect_batch(s.shop_id, urls, s.gsc_site_url, s.language_code)
-
-    # Stap 3: Push niet-geIndexeerde URLs (priority eerst, dan regulier)
-    logger.info("=== STAP 3: URLs pushen ===")
-    pusher = IndexingPusher()
-
-    priority_urls = get_priority_push_urls()
-    if priority_urls:
-        logger.info(f"  Priority queue: {len(priority_urls)} URLs")
-        pusher.push_priority_batch(priority_urls)
-
-    push_urls = get_push_urls()
-    if push_urls:
-        pusher.push_batch(push_urls)
-
-    # Stap 4: Dagelijkse snapshot opslaan
-    logger.info("=== STAP 4: Snapshots opslaan ===")
-    for s in get_enabled_shops():
-        save_daily_snapshot(s.shop_id)
-
-    # Rapport
-    logger.info("=== RAPPORT ===")
-    summaries = get_all_shops_summary()
-    for s in summaries:
-        total = s["total_urls"]
-        indexed = s["indexed"]
-        pct = f"{(indexed / total * 100):.1f}%" if total > 0 else "N/A"
-        logger.info(f"  {s['shop_id']}: {total} URLs, {indexed} indexed ({pct})")
-
-    if incomplete_scans:
-        raise click.ClickException("Pipeline incompleet: sitemapscans voor " + ", ".join(incomplete_scans))
-    logger.info("Pipeline voltooid.")
+    sys.exit(main())
 
 
 if __name__ == "__main__":

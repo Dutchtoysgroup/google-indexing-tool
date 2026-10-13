@@ -1,4 +1,8 @@
 import unittest
+import json
+import os
+import tempfile
+from pathlib import Path
 from contextlib import ExitStack
 from unittest.mock import MagicMock, patch
 
@@ -11,6 +15,13 @@ import main
 
 
 class ReportingTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        environment = patch.dict(os.environ, {"PIPELINE_REPORT_DIR": self.directory.name})
+        environment.start()
+        self.addCleanup(environment.stop)
+
     def result(self, complete):
         return SitemapResult(
             urls={"product": [SHOP.base_url + "/product"]},
@@ -35,11 +46,15 @@ class ReportingTests(unittest.TestCase):
                 "get_inspection_urls": [], "get_priority_push_urls": [],
                 "get_push_urls": [], "get_all_shops_summary": [],
             }.items():
-                stack.enter_context(patch("cli." + name, return_value=value))
-            snapshot = stack.enter_context(patch("cli.save_daily_snapshot"))
+                stack.enter_context(patch("main." + name, return_value=value))
+            snapshot = stack.enter_context(patch("main.save_daily_snapshot"))
             result = CliRunner().invoke(cli, ["run"])
         self.assertEqual(result.exit_code, 1, result.output)
-        self.assertIn("Pipeline incompleet", result.output)
+        report_path, = Path(self.directory.name).glob("*.json")
+        report = json.loads(report_path.read_text())
+        self.assertEqual(report["status"], "incomplete")
+        self.assertEqual(report["shops"]["test"]["phases"]["scan"]["failed_sitemaps"],
+                         [SHOP.base_url + "/sitemap-products.xml"])
         snapshot.assert_called_once_with("test")
 
     def test_main_pipeline_exit_status_and_final_report(self):
@@ -58,5 +73,5 @@ class ReportingTests(unittest.TestCase):
                 with self.assertLogs("main", level="INFO") as logs:
                     code = main.main()
                 self.assertEqual(code, 0 if complete else 1)
-                self.assertEqual("Pipeline incompleet" in " ".join(logs.output), not complete)
+                self.assertEqual("Pipeline incomplete" in " ".join(logs.output), not complete)
                 snapshot.assert_called_once_with("test")

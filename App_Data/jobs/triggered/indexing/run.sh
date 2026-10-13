@@ -33,4 +33,6 @@ fi
 export GOOGLE_SERVICE_ACCOUNT_KEY="$(cat "$secret_file")"
 rm -f "$secret_file"
 
+# /home survives cleanup of the temporary extraction directory.
+export PIPELINE_REPORT_DIR="${PIPELINE_REPORT_DIR:-/home/data/indexing-pipeline-runs}"
 "$python_bin" main.py

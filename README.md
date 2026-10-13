@@ -453,3 +453,13 @@ export INDEXING_DELAY_SECONDS=0.5           # pauze tussen pushes
 - **GitHub Secret** — Versleutelde variabele in GitHub. Gebruikt om gevoelige waarden (zoals wachtwoorden en sleutels) veilig te bewaren.
 - **Cron** — Een notatie waarmee je tijdschema's beschrijft. `0 2 * * *` betekent "elke dag om 02:00 UTC".
 - **PASS / NEUTRAL / FAIL** — Verdict van Google bij een URL Inspection: PASS = geïndexeerd, NEUTRAL = bekend maar niet geïndexeerd, FAIL = probleem.
+
+### Pipelinefouten en runrapporten
+
+De volledige pipeline (`python main.py` of `python cli.py run`) geeft exitcode 1
+als scan, inspectie of snapshot van een shop niet volledig slaagt. Per run worden
+fase-uitkomsten en shopspecifieke fouten duurzaam opgeslagen in JSON, op Azure
+in `/home/data/indexing-pipeline-runs/` en lokaal in `data/pipeline-runs/`
+(override: `PIPELINE_REPORT_DIR`). Push blijft optioneel.
+Zie [Runstatus en foutdiagnostiek](WORKFLOW.md#runstatus-en-foutdiagnostiek) voor
+statussen, diagnostiek en offline tests.

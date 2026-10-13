@@ -14,3 +14,5 @@ data/logs/
 *.log
 .DS_Store
 .claude/
+
+data/pipeline-runs/

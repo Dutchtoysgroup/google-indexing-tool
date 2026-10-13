@@ -5,8 +5,8 @@ from __future__ import annotations
 import base64
 import json
 import logging
-import tempfile
 import time
+from dataclasses import dataclass, field
 
 import google.auth.transport.requests
 import requests
@@ -24,6 +24,21 @@ logger = logging.getLogger(__name__)
 
 INSPECTION_ENDPOINT = "https://searchconsole.googleapis.com/v1/urlInspection/index:inspect"
 SCOPES = ["https://www.googleapis.com/auth/webmasters.readonly"]
+
+
+@dataclass
+class InspectionBatchResult:
+    selected: int
+    attempted: int = 0
+    succeeded: int = 0
+    skipped: int = 0
+    errors: list[dict] = field(default_factory=list)
+
+    @property
+    def status(self):
+        if self.errors:
+            return "incomplete" if self.succeeded else "failed"
+        return "success"
 
 
 class URLInspector:
@@ -67,6 +82,7 @@ class URLInspector:
         Returns:
             Dict met inspection resultaat of None bij fout.
         """
+        self.last_error = None
         # Token verversen als nodig
         if not self.credentials.valid:
             self._refresh_token()
@@ -85,12 +101,18 @@ class URLInspector:
             resp.raise_for_status()
             data = resp.json()
         except requests.RequestException as e:
+            self.last_error = f"{type(e).__name__}: {e}"
             logger.error(f"API fout bij inspectie van {url}: {e}")
             return None
 
         # Parse het resultaat
         inspection = data.get("inspectionResult", {})
         index_status = inspection.get("indexStatusResult", {})
+
+        if not index_status.get("verdict"):
+            self.last_error = "Invalid API response: missing indexStatusResult.verdict"
+            logger.error(f"API fout bij inspectie van {url}: {self.last_error}")
+            return None
 
         result = {
             "coverage_state": index_status.get("coverageState"),
@@ -116,32 +138,38 @@ class URLInspector:
         Returns:
             Aantal succesvol geInspecteerde URLs
         """
-        # Check dagelijks limiet
+        return self.inspect_batch_result(shop_id, urls, site_url, language_code).succeeded
+
+    def inspect_batch_result(
+        self, shop_id: str, urls: list[dict], site_url: str, language_code: str
+    ) -> InspectionBatchResult:
+        """Return counts and URL-specific diagnostics, including swallowed API errors.
+
+        Quota exclusions are expected scheduling, not API failures. The existing
+        inspect_batch entry point keeps its integer return for callers.
+        """
+        batch = InspectionBatchResult(selected=len(urls))
         used_today = get_daily_api_usage("inspection", shop_id)
-        remaining = INSPECTION_DAILY_LIMIT_PER_SHOP - used_today
-        if remaining <= 0:
-            logger.warning(f"Dagelijks limiet bereikt voor {shop_id} ({used_today} inspections)")
-            return 0
-
-        to_inspect = urls[:remaining]
-        success_count = 0
-
-        for url_row in to_inspect:
+        remaining = max(0, INSPECTION_DAILY_LIMIT_PER_SHOP - used_today)
+        batch.skipped = max(0, len(urls) - remaining)
+        for url_row in urls[:remaining]:
             url = url_row["url"]
-            result = self.inspect_url(url, site_url, language_code)
-            if result:
-                update_inspection_result(shop_id, url, result)
-                success_count += 1
-                verdict = result.get("verdict", "?")
-                state = result.get("coverage_state", "?")
-                logger.info(f"  [{verdict}] {url} - {state}")
-            else:
-                logger.warning(f"  [FOUT] {url}")
-
+            batch.attempted += 1
+            self.last_error = None
+            try:
+                result = self.inspect_url(url, site_url, language_code)
+                if result:
+                    update_inspection_result(shop_id, url, result)
+                    batch.succeeded += 1
+                    logger.info(f"  [{result.get('verdict', '?')}] {url}")
+                else:
+                    batch.errors.append({"url": url, "error": self.last_error or "Inspection failed"})
+            except Exception as exc:
+                batch.errors.append({"url": url, "error": f"{type(exc).__name__}: {exc}"})
             time.sleep(INSPECTION_DELAY_SECONDS)
 
-        # Log API usage
-        if success_count > 0:
-            log_api_usage(shop_id, "inspection", success_count)
-
-        return success_count
+        if batch.succeeded:
+            log_api_usage(shop_id, "inspection", batch.succeeded)
+        for error in batch.errors:
+            logger.error(f"  [{shop_id}] {error['url']}: {error['error']}")
+        return batch

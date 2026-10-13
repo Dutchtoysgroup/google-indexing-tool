@@ -117,6 +117,78 @@ Deze snapshots vullen de trendgrafiek in het dashboard.
 
 ---
 
+## Runstatus en foutdiagnostiek
+
+`python main.py` en `python cli.py run` gebruiken dezelfde pipeline en exitcode:
+
+- **`success` / exit 0:** scan, geplande inspecties en snapshot zijn voor elke
+  ingeschakelde shop geslaagd.
+- **`incomplete` / exit 1:** minimaal één noodzakelijke fase is mislukt, gedeeltelijk
+  geslaagd of overgeslagen vanwege het tijdsbudget. Andere shops en snapshots
+  blijven doorlopen.
+- **`failed` / exit 1:** alle noodzakelijke fasen van alle shops zijn mislukt, er
+  zijn geen ingeschakelde shops, of database-initialisatie/eindrapportage faalt.
+
+Een API-fout is geen inspectieresultaat: ook wanneer alle HTTP-aanroepen falen
+zonder exception uit de batch, krijgt de inspectiefase `failed`. Bij een deels
+succesvolle batch wordt dat `incomplete`. Een Google-verdict `FAIL` is daarentegen
+wel een geslaagde inspectie: het is de indexeringsstatus van de pagina.
+
+Daglimieten en een lege planning zijn normale situaties en maken de run niet
+onvolledig. Push blijft een **optionele** fase met een gedeeld quotum: de aparte
+`push`-uitkomst bevat batchaantallen en fouten, maar bepaalt de exitcode niet.
+
+### Duurzaam JSON-rapport
+
+Elke run krijgt een uniek JSON-bestand, bijgewerkt vóór en na elke shopfase:
+
+- Azure WebJob: `/home/data/indexing-pipeline-runs/<run_id>.json`.
+- Lokaal: `data/pipeline-runs/<run_id>.json`.
+- Override: `PIPELINE_REPORT_DIR=/absoluut/pad` (gebruik blijvende opslag).
+
+Het volledige pad staat in de logs als `Runrapport:`. De Azure-map staat buiten
+zowel de tijdelijke WebJob-extractiemap als de gedeployde applicatiebestanden.
+Rapporten blijven bewaard totdat ze expliciet worden opgeruimd.
+
+Het rapport bevat UTC-start/eindtijden, de runstatus en per `shop_id` een naam,
+shopstatus en `phases.scan`, `phases.inspect` en `phases.snapshot`. Inspecties
+bevatten `selected`, `attempted`, `succeeded`, `skipped` en `errors` met de URL en
+foutsoort/melding. Een snapshot kan geslaagd zijn terwijl inspecties falen; lees
+het runrapport om te bepalen of de snapshot actuele inspecties bevat.
+
+Bestanden worden atomair vervangen en naar disk geflusht. Als het rapport niet
+kan worden opgeslagen, stopt het proces met een niet-nul exitcode. Een afgebroken
+run houdt `status: incomplete` en `finished_at: null`; `pending`/`running` wijst
+op werk dat niet is afgerond. De definitieve shopstatus wordt aan het einde bepaald.
+
+Voorbeeld: diagnostiek van een run bekijken met `jq`:
+
+```bash
+jq '{run_id, status, errors, shops, push}' /home/data/indexing-pipeline-runs/<run_id>.json
+```
+
+HTTP-fouten in root- of deelsitemaps worden als scanfout opgenomen in het runrapport. Ongeldige
+XML of een HTML-foutpagina telt ook als fout. Bij zo'n onvolledige scan worden
+de verzamelde URLs niet weggeschreven en bestaande URLs niet als verdwenen
+gemarkeerd.
+
+### Offline regressietests
+
+```bash
+python -m pip install -r requirements.txt
+python -m unittest discover -s tests -v
+```
+
+De unit-tests gebruiken eigen shopfixtures en gesimuleerde HTTP/API- en databasefouten;
+er zijn geen credentials, echte shopconfiguratie of database nodig. Ze controleren
+onder andere API-uitval, gedeeltelijk succes, scan- en snapshotfouten,
+tijdsbudgetten, quota, rapportopslag en de exitcodes van beide entrypoints.
+De Azure-deployworkflow voert deze tests uit vóór deployment. De afzonderlijke
+database-integratietests vereisen `TEST_DATABASE_URL`; zonder die variabele
+worden alleen die tests overgeslagen.
+
+---
+
 ## GitHub Actions
 
 ### Wanneer draait de pipeline?

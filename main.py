@@ -4,6 +4,9 @@ import logging
 import sys
 import os
 import time
+from dataclasses import asdict
+
+from pipeline_report import RunReport
 
 # Voeg project root toe aan sys.path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -68,100 +71,118 @@ def main():
     else:
         logger.info("Geen tijdsbudget — draait tot klaar")
 
-    # Database initialiseren
-    init_db()
-
     shops = get_enabled_shops()
+    report = RunReport(shops)
+    logger.info(f"Runrapport: {report.path}")
+    try:
+        init_db()
+    except Exception as exc:
+        report.error("database_init", exc)
+        logger.exception("Database initialisatie mislukt")
+        return report.finish()
+
     logger.info(f"{len(shops)} shops geconfigureerd")
 
-    # Stap 1: Sitemaps scannen
+    def phase_error(shop, phase, exc):
+        diagnostic = f"{type(exc).__name__}: {exc}"
+        logger.error(f"[{shop.shop_id}] {phase} mislukt: {diagnostic}")
+        report.phase(shop.shop_id, phase, "failed", error=diagnostic)
+
+    # Scan failures must not stop the remaining shops or snapshots.
     logger.info("--- Stap 1: Sitemaps scannen ---")
-    collector = SitemapCollector()
-    incomplete_scans = []
-    for index, shop in enumerate(shops):
+    for shop in shops:
         if over_budget():
-            logger.warning(
-                f"Tijdsbudget verstreken na {elapsed() / 60:.1f} min — "
-                f"scan afgebroken; resterende shops worden overgeslagen"
+            report.phase(shop.shop_id, "scan", "skipped", reason="time_budget_exceeded")
+            continue
+        report.phase(shop.shop_id, "scan", "running")
+        try:
+            result = SitemapCollector().collect(shop)
+        except Exception as exc:
+            phase_error(shop, "scan", exc)
+        else:
+            report.phase(
+                shop.shop_id, "scan",
+                "success" if result.complete else "incomplete" if result.total else "failed",
+                url_count=result.total, failed_sitemaps=result.failed_sitemaps, errors=result.errors,
             )
-            incomplete_scans.extend(s.shop_id for s in shops[index:])
-            break
-        try:
-            result = collector.collect(shop)
-            if not result.complete:
-                incomplete_scans.append(shop.shop_id)
-        except Exception as e:
-            incomplete_scans.append(shop.shop_id)
-            logger.error(f"Fout bij scannen {shop.name}: {e}")
 
-    # Stap 2: URLs inspecteren
     logger.info("--- Stap 2: URLs inspecteren ---")
-    if over_budget():
-        logger.warning(
-            f"Tijdsbudget al verstreken ({elapsed() / 60:.1f} min) — "
-            f"inspecties overgeslagen; direct door naar push"
-        )
-    else:
+    inspector = None
+    for shop in shops:
+        if over_budget():
+            report.phase(shop.shop_id, "inspect", "skipped", reason="time_budget_exceeded")
+            continue
+        report.phase(shop.shop_id, "inspect", "running")
         try:
-            inspector = URLInspector()
-            for shop in shops:
-                if over_budget():
-                    logger.warning(
-                        f"Tijdsbudget verstreken na {elapsed() / 60:.1f} min — "
-                        f"resterende shops inspecties overslaan"
-                    )
-                    break
-                try:
-                    urls = get_inspection_urls(shop.shop_id)
-                    if urls:
-                        logger.info(
-                            f"  {shop.shop_id}: {len(urls)} URLs te inspecteren"
-                        )
-                        inspector.inspect_batch(
-                            shop.shop_id, urls, shop.gsc_site_url, shop.language_code
-                        )
-                except Exception as e:
-                    logger.error(f"Fout bij inspecteren {shop.name}: {e}")
-        except RuntimeError as e:
-            logger.warning(f"URL Inspection overgeslagen: {e}")
+            urls = get_inspection_urls(shop.shop_id)
+            if urls:
+                # Lazy auth: no scheduled work (including exhausted daily quota)
+                # is a valid success and does not require an API connection.
+                if inspector is None:
+                    inspector = URLInspector()
+                result = inspector.inspect_batch_result(
+                    shop.shop_id, urls, shop.gsc_site_url, shop.language_code
+                )
+                details = asdict(result)
+                status = result.status
+            else:
+                details = {"selected": 0, "attempted": 0, "succeeded": 0,
+                           "skipped": 0, "errors": [], "reason": "no_scheduled_urls"}
+                status = "success"
+        except Exception as exc:
+            phase_error(shop, "inspect", exc)
+        else:
+            report.phase(shop.shop_id, "inspect", status, **details)
 
-    # Stap 3: Niet-geIndexeerde URLs pushen (geen budget-check: altijd door)
-    logger.info(
-        f"--- Stap 3: URLs pushen --- (elapsed: {elapsed() / 60:.1f} min)"
-    )
+    # Push remains best effort and uses the shared daily quota. Always continue
+    # to snapshots, even if authentication, scheduling or pushing raises.
+    logger.info("--- Stap 3: URLs pushen ---")
+    report.data["push"] = {"required": False, "status": "running", "batches": []}
+    report.save()
     try:
-        pusher = IndexingPusher()
+        pusher = None
+        for kind, select, method in (
+            ("priority", get_priority_push_urls, "push_priority_batch"),
+            ("regular", get_push_urls, "push_batch"),
+        ):
+            urls = select()
+            succeeded = 0
+            if urls:
+                if pusher is None:
+                    pusher = IndexingPusher()
+                succeeded = getattr(pusher, method)(urls)
+            report.data["push"]["batches"].append(
+                {"kind": kind, "selected": len(urls), "succeeded": succeeded}
+            )
+            report.save()
+    except Exception as exc:
+        logger.warning(f"Indexing push mislukt: {exc}")
+        report.data["push"].update(status="failed", error=f"{type(exc).__name__}: {exc}")
+    else:
+        batches = report.data["push"]["batches"]
+        report.data["push"]["status"] = (
+            "success" if all(b["selected"] == b["succeeded"] for b in batches) else "incomplete"
+        )
+    report.save()
 
-        # Stap 3a: priority URLs (handmatig versneld). Verbruikt hetzelfde
-        # dagelijkse quotum maar gaat voor in de wachtrij.
-        priority_urls = get_priority_push_urls()
-        if priority_urls:
-            logger.info(f"  Priority queue: {len(priority_urls)} URLs")
-            pusher.push_priority_batch(priority_urls)
-        else:
-            logger.info("  Geen priority URLs in de wachtrij")
-
-        # Stap 3b: reguliere niet-geïndexeerde URLs.
-        push_urls = get_push_urls()
-        if push_urls:
-            logger.info(f"  {len(push_urls)} URLs te pushen")
-            pusher.push_batch(push_urls)
-        else:
-            logger.info("  Geen URLs om te pushen")
-    except RuntimeError as e:
-        logger.warning(f"Indexing push overgeslagen: {e}")
-
-    # Stap 4: Dagelijkse snapshots (altijd door)
     logger.info("--- Stap 4: Snapshots opslaan ---")
     for shop in shops:
+        report.phase(shop.shop_id, "snapshot", "running")
         try:
             save_daily_snapshot(shop.shop_id)
-        except Exception as e:
-            logger.error(f"Fout bij snapshot {shop.name}: {e}")
+        except Exception as exc:
+            phase_error(shop, "snapshot", exc)
+        else:
+            report.phase(shop.shop_id, "snapshot", "success")
 
     # Eindrapport
     logger.info("--- Eindrapport ---")
-    summaries = get_all_shops_summary()
+    try:
+        summaries = get_all_shops_summary()
+    except Exception as exc:
+        report.error("summary", exc)
+        logger.exception("Eindrapport kon niet worden opgehaald")
+        summaries = []
     total_all = indexed_all = 0
     for s in summaries:
         total = s["total_urls"]
@@ -173,11 +194,12 @@ def main():
 
     overall_pct = f"{(indexed_all / total_all * 100):.1f}%" if total_all > 0 else "N/A"
     logger.info(f"  TOTAAL: {total_all} URLs, {indexed_all} indexed ({overall_pct})")
-    if incomplete_scans:
-        logger.warning("Pipeline incompleet: sitemapscans voor %s", ", ".join(incomplete_scans))
-        return 1
-    logger.info(f"Pipeline voltooid in {elapsed() / 60:.1f} min.")
-    return 0
+    exit_code = report.finish()
+    for shop_id, outcome in report.data["shops"].items():
+        logger.info(f"  {shop_id}: {outcome['status']}")
+    log = logger.info if exit_code == 0 else logger.error
+    log(f"Pipeline {report.data['status']} in {elapsed() / 60:.1f} min; rapport: {report.path}")
+    return exit_code
 
 
 if __name__ == "__main__":

@@ -36,6 +36,7 @@ class SitemapResult:
 
     urls: dict[str, list[str]] = field(default_factory=dict)
     failed_sitemaps: list[str] = field(default_factory=list)
+    errors: list[dict] = field(default_factory=list)
 
     @property
     def complete(self) -> bool:
@@ -86,6 +87,7 @@ class SitemapCollector:
         def fail(reason: str) -> SitemapResult:
             logger.error("Onvolledige sitemap %s: %s", sitemap_url, reason)
             result.failed_sitemaps.append(sitemap_url)
+            result.errors.append({"url": sitemap_url, "error": reason})
             return result
 
         if sitemap_url in ancestors:
@@ -129,6 +131,7 @@ class SitemapCollector:
                 for child_type, urls in child.urls.items():
                     result.urls.setdefault(child_type, []).extend(urls)
                 result.failed_sitemaps.extend(child.failed_sitemaps)
+                result.errors.extend(child.errors)
             elif location == base or location.startswith(base + "/"):
                 result.urls.setdefault(url_type or "other", []).append(location)
 
