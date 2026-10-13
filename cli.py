@@ -11,6 +11,7 @@ from db.queries import (
     get_all_shops_summary,
     get_shop_summary,
     get_daily_api_usage,
+    get_daily_indexing_outcomes,
     get_priority_schedule_summary,
 )
 from collectors.sitemap import SitemapCollector
@@ -189,11 +190,21 @@ def status():
         inspections = get_daily_api_usage("inspection", s.shop_id)
         pushes = get_daily_api_usage("indexing", s.shop_id)
         if inspections > 0 or pushes > 0:
-            click.echo(f"  {s.shop_id}: {inspections} inspections, {pushes} pushes")
+            outcomes = get_daily_indexing_outcomes(s.shop_id)
+            click.echo(
+                f"  {s.shop_id}: {inspections} inspections, {pushes} quotumplaatsen gebruikt; "
+                f"{outcomes['succeeded']} geslaagd, {outcomes['failed']} mislukt, "
+                f"{outcomes['unknown']} onbekend/in behandeling"
+            )
 
     total_inspections = get_daily_api_usage("inspection")
     total_pushes = get_daily_api_usage("indexing")
-    click.echo(f"\n  Totaal: {total_inspections} inspections, {total_pushes} pushes")
+    outcomes = get_daily_indexing_outcomes()
+    click.echo(
+        f"\n  Totaal: {total_inspections} inspections, {total_pushes} quotumplaatsen gebruikt; "
+        f"{outcomes['succeeded']} geslaagd, {outcomes['failed']} mislukt, "
+        f"{outcomes['unknown']} onbekend/in behandeling"
+    )
 
 
 @cli.group()

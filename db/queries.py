@@ -136,18 +136,99 @@ def update_inspection_result(shop_id: str, url: str, result: dict):
         conn.close()
 
 
-def mark_as_pushed(shop_id: str, url: str):
-    """Registreer dat een URL is gepusht naar de Indexing API."""
+def reserve_indexing_request(
+    shop_id: str | None, url: str, daily_limit: int, priority_id: int | None = None,
+) -> int | None:
+    """Reserveer en commit één budgetplek vóór het externe request.
+
+    De transactielock serialiseert quotumchecks van alle indexing-workers,
+    inclusief priority pushes. Bestaande api_log-tellingen blijven meetellen.
+    Een reservering wordt nooit vrijgegeven: een onderbroken request kan door
+    Google al verwerkt zijn terwijl de lokale uitkomst nog onbekend is.
+    """
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT pg_advisory_xact_lock(734921, 1)")
+            cur.execute("""
+                SELECT COALESCE(SUM(url_count), 0) AS total
+                FROM api_log WHERE date = CURRENT_DATE AND api_type = 'indexing'
+            """)
+            if cur.fetchone()["total"] >= daily_limit:
+                conn.commit()
+                return None
+            cur.execute("""
+                INSERT INTO indexing_requests (shop_id, url, priority_id)
+                VALUES (%s, %s, %s) RETURNING id
+            """, (shop_id, url, priority_id))
+            request_id = cur.fetchone()["id"]
+            cur.execute("""
+                INSERT INTO api_log (date, shop_id, api_type, url_count)
+                VALUES (CURRENT_DATE, %s, 'indexing', 1)
+            """, (shop_id or "__priority_unmapped__",))
+        conn.commit()
+        return request_id
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def complete_indexing_request(
+    request_id: int, outcome: str, http_status: int | None = None,
+    error: str | None = None,
+):
+    """Boek uitkomst, URL-succes en priority-status atomair, maximaal één keer."""
+    if outcome not in {"succeeded", "failed", "unknown"}:
+        raise ValueError("Ongeldige indexing-uitkomst")
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute("""
-                UPDATE urls SET
-                    last_pushed = NOW(),
-                    push_count = push_count + 1
-                WHERE shop_id = %s AND url = %s
-            """, (shop_id, url))
+                UPDATE indexing_requests
+                SET outcome = %s, http_status = %s, error = %s, completed_at = NOW()
+                WHERE id = %s AND outcome = 'reserved'
+                RETURNING shop_id, url, priority_id
+            """, (outcome, http_status, error, request_id))
+            request = cur.fetchone()
+            if request is not None:
+                if outcome == "succeeded" and request["shop_id"]:
+                    cur.execute("""
+                        UPDATE urls SET last_pushed = NOW(), push_count = push_count + 1
+                        WHERE shop_id = %s AND url = %s
+                    """, (request["shop_id"], request["url"]))
+                if request["priority_id"] is not None:
+                    cur.execute("""
+                        UPDATE priority_urls
+                        SET status = %s, push_error = %s,
+                            pushed_at = CASE WHEN %s THEN NOW() ELSE NULL END
+                        WHERE id = %s
+                    """, (
+                        "pushed" if outcome == "succeeded" else "failed", error,
+                        outcome == "succeeded", request["priority_id"],
+                    ))
         conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def get_daily_indexing_outcomes(shop_id: str | None = None) -> dict:
+    """Succesmetingen staan los van het gereserveerde quotum in api_log."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT COUNT(*) FILTER (WHERE outcome = 'succeeded') AS succeeded,
+                       COUNT(*) FILTER (WHERE outcome = 'failed') AS failed,
+                       COUNT(*) FILTER (WHERE outcome IN ('reserved', 'unknown')) AS unknown
+                FROM indexing_requests
+                WHERE date = CURRENT_DATE AND (%s IS NULL OR shop_id = %s)
+            """, (shop_id, shop_id))
+            return dict(cur.fetchone())
     finally:
         conn.close()
 
@@ -259,7 +340,7 @@ def get_urls_to_push(limit: int = 200) -> list[dict]:
 
 
 def get_daily_api_usage(api_type: str, shop_id: str | None = None) -> int:
-    """Hoeveel API calls zijn er vandaag gedaan."""
+    """Dagelijks verbruik; indexing telt duurzame reserveringen, geen successen."""
     conn = get_connection()
     try:
         with conn.cursor() as cur:
@@ -453,26 +534,6 @@ def get_priority_urls_for_today(limit: int | None = None) -> list[dict]:
                     (limit,),
                 )
             return cur.fetchall()
-    finally:
-        conn.close()
-
-
-def mark_priority_pushed(priority_id: int, success: bool, error: str | None = None):
-    """Markeer een priority URL als gepusht (of failed)."""
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                UPDATE priority_urls SET
-                    status = %s,
-                    push_error = %s,
-                    pushed_at = NOW()
-                WHERE id = %s
-                """,
-                ("pushed" if success else "failed", error, priority_id),
-            )
-        conn.commit()
     finally:
         conn.close()
 

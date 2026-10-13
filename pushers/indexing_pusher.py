@@ -18,16 +18,18 @@ from config.settings import (
     SERVICE_ACCOUNT_KEY_PATH,
 )
 from db.queries import (
-    mark_as_pushed,
-    get_daily_api_usage,
-    log_api_usage,
-    mark_priority_pushed,
+    reserve_indexing_request,
+    complete_indexing_request,
 )
 
 logger = logging.getLogger(__name__)
 
 INDEXING_ENDPOINT = "https://indexing.googleapis.com/v3/urlNotifications:publish"
 SCOPES = ["https://www.googleapis.com/auth/indexing"]
+
+
+class IndexingQuotaExceeded(Exception):
+    """Geen budgetplek beschikbaar; er is geen HTTP-request verstuurd."""
 
 
 class IndexingPusher:
@@ -62,131 +64,67 @@ class IndexingPusher:
     def _refresh_token(self):
         self.credentials.refresh(google.auth.transport.requests.Request())
 
-    def push_url(self, url: str) -> bool:
-        """Push een enkele URL naar de Indexing API.
-
-        Returns:
-            True bij succes, False bij fout.
-        """
+    def push_url(
+        self, url: str, shop_id: str | None, priority_id: int | None = None,
+    ) -> bool:
+        """Reserveer budget, verstuur één request en registreer de uitkomst."""
         if not self.credentials.valid:
             self._refresh_token()
 
+        request_id = reserve_indexing_request(
+            shop_id, url, INDEXING_DAILY_LIMIT, priority_id=priority_id,
+        )
+        if request_id is None:
+            raise IndexingQuotaExceeded
+
+        # Alleen netwerkfouten afvangen. Bij een crash of databasefout blijft de
+        # reeds gecommitte reservering bestaan en wordt geen succes verzonnen.
         try:
             resp = requests.post(
                 INDEXING_ENDPOINT,
                 headers={"Authorization": f"Bearer {self.credentials.token}"},
-                json={
-                    "url": url,
-                    "type": "URL_UPDATED",
-                },
+                json={"url": url, "type": "URL_UPDATED"},
                 timeout=30,
             )
-
-            if resp.status_code == 200:
-                return True
-
-            # Log specifieke fouten
-            error_data = resp.json() if resp.text else {}
-            error_msg = error_data.get("error", {}).get("message", resp.text)
-            logger.warning(f"Indexing API fout voor {url}: {resp.status_code} - {error_msg}")
+        except requests.RequestException as exc:
+            error = str(exc)[:2000]
+            complete_indexing_request(request_id, "unknown", error=error)
+            logger.error("Onbekende requestuitkomst voor %s: %s", url, error)
             return False
 
-        except requests.RequestException as e:
-            logger.error(f"Request fout bij pushen van {url}: {e}")
-            return False
+        success = resp.status_code == 200
+        error = None if success else resp.text[:2000] or f"HTTP {resp.status_code}"
+        complete_indexing_request(
+            request_id, "succeeded" if success else "failed",
+            http_status=resp.status_code, error=error,
+        )
+        if not success:
+            logger.warning("Indexing API fout voor %s: %s - %s", url, resp.status_code, error)
+        return success
 
     def push_priority_batch(self, priority_rows: list[dict]) -> int:
-        """Push een batch priority URLs.
-
-        Args:
-            priority_rows: dicts met 'id', 'url', en optioneel 'shop_id' keys
-                           (van get_priority_urls_for_today).
-
-        Returns:
-            Aantal succesvol gepushte URLs. Markeert elke URL als pushed/failed
-            in de priority_urls tabel.
-        """
-        if not priority_rows:
-            return 0
-
-        used_today = get_daily_api_usage("indexing")
-        remaining = INDEXING_DAILY_LIMIT - used_today
-        if remaining <= 0:
-            logger.warning(
-                f"Dagelijks push limiet bereikt ({used_today}/{INDEXING_DAILY_LIMIT})"
-            )
-            return 0
-
-        to_push = priority_rows[:remaining]
-        success_count = 0
-        shop_counts: dict[str, int] = {}
-
-        for row in to_push:
-            url = row["url"]
-            shop_id = row.get("shop_id")
-            priority_id = row["id"]
-
-            ok = self.push_url(url)
-            if ok:
-                mark_priority_pushed(priority_id, success=True)
-                if shop_id:
-                    mark_as_pushed(shop_id, url)
-                    shop_counts[shop_id] = shop_counts.get(shop_id, 0) + 1
-                else:
-                    shop_counts["__priority_unmapped__"] = (
-                        shop_counts.get("__priority_unmapped__", 0) + 1
-                    )
-                success_count += 1
-                logger.info(f"  [PUSHED][priority] {url}")
-            else:
-                mark_priority_pushed(priority_id, success=False, error="API call failed")
-                logger.warning(f"  [FAILED][priority] {url}")
-
-            time.sleep(INDEXING_DELAY_SECONDS)
-
-        for sid, count in shop_counts.items():
-            log_api_usage(sid, "indexing", count)
-
-        return success_count
+        """Push priority URLs met hetzelfde duurzame quotum als reguliere URLs."""
+        return self._push_batch(priority_rows, priority=True)
 
     def push_batch(self, urls: list[dict]) -> int:
-        """Push een batch niet-geIndexeerde URLs.
+        """Push URLs; tel alleen daadwerkelijk geregistreerde successen."""
+        return self._push_batch(urls, priority=False)
 
-        Args:
-            urls: Lijst van dicts met 'shop_id' en 'url' keys
-
-        Returns:
-            Aantal succesvol gepushte URLs
-        """
-        # Check dagelijks limiet
-        used_today = get_daily_api_usage("indexing")
-        remaining = INDEXING_DAILY_LIMIT - used_today
-        if remaining <= 0:
-            logger.warning(f"Dagelijks push limiet bereikt ({used_today}/{INDEXING_DAILY_LIMIT})")
-            return 0
-
-        to_push = urls[:remaining]
+    def _push_batch(self, rows: list[dict], *, priority: bool) -> int:
         success_count = 0
-
-        for url_row in to_push:
-            url = url_row["url"]
-            shop_id = url_row["shop_id"]
-
-            if self.push_url(url):
-                mark_as_pushed(shop_id, url)
+        for row in rows:
+            try:
+                ok = self.push_url(
+                    row["url"], row.get("shop_id"),
+                    priority_id=row["id"] if priority else None,
+                )
+            except IndexingQuotaExceeded:
+                logger.warning("Dagelijks pushquotum bereikt (%s)", INDEXING_DAILY_LIMIT)
+                break
+            if ok:
                 success_count += 1
-                logger.info(f"  [PUSHED] {url}")
+                logger.info("  [PUSHED]%s %s", "[priority]" if priority else "", row["url"])
             else:
-                logger.warning(f"  [FAILED] {url}")
-
+                logger.warning("  [NOT PUSHED]%s %s", "[priority]" if priority else "", row["url"])
             time.sleep(INDEXING_DELAY_SECONDS)
-
-        # Log API usage per shop
-        shop_counts: dict[str, int] = {}
-        for url_row in to_push[:success_count]:
-            sid = url_row["shop_id"]
-            shop_counts[sid] = shop_counts.get(sid, 0) + 1
-        for sid, count in shop_counts.items():
-            log_api_usage(sid, "indexing", count)
-
         return success_count

@@ -44,6 +44,25 @@ CREATE TABLE IF NOT EXISTS api_log (
 
 CREATE INDEX IF NOT EXISTS idx_api_log_date ON api_log(date, api_type, shop_id);
 
+-- Eén duurzame budgetreservering per indexing-request. De bijbehorende
+-- api_log-regel telt verbruik; alleen outcome='succeeded' telt als succes.
+CREATE TABLE IF NOT EXISTS indexing_requests (
+    id BIGSERIAL PRIMARY KEY,
+    date DATE NOT NULL DEFAULT CURRENT_DATE,
+    shop_id TEXT,
+    url TEXT NOT NULL,
+    priority_id INT,
+    outcome TEXT NOT NULL DEFAULT 'reserved'
+        CHECK (outcome IN ('reserved', 'succeeded', 'failed', 'unknown')),
+    http_status INT,
+    error TEXT,
+    reserved_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    completed_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_indexing_requests_date_shop
+    ON indexing_requests(date, shop_id);
+
 CREATE TABLE IF NOT EXISTS daily_snapshots (
     id SERIAL PRIMARY KEY,
     date DATE NOT NULL,

@@ -13,6 +13,34 @@ De tool is generiek: of je nu één webshop hebt of er twintig, je vult zelf je 
 
 ---
 
+## Pushregistratie en quotum
+
+Elke Indexing API-aanroep krijgt vóór verzending een duurzame reservering in
+`indexing_requests` met URL en webshop (en bij priority-pushes het wachtrij-ID).
+De budgetcheck en registratie in `api_log` gebeuren in één transactie onder een
+gedeelde PostgreSQL-lock. Gelijktijdige workers en priority-/reguliere batches
+kunnen daardoor samen het ingestelde dagbudget niet overschrijden.
+
+Na elk request worden de uitkomst, HTTP-status en eventuele fout direct
+opgeslagen. Alleen een succesvolle respons verhoogt `urls.push_count` en
+`last_pushed` voor die specifieke URL/webshop. De uitkomst en eventuele
+priority-status worden in dezelfde transactie geboekt; opnieuw afronden van
+hetzelfde request verhoogt de succesmeting niet nogmaals.
+
+Quotumverbruik staat los van succes: ook fouten en requests met onbekende uitkomst
+tellen conservatief mee. Een timeout krijgt uitkomst `unknown`; een crash tussen
+reserveren en afronden laat `reserved` achter. Die reserveringen vervallen niet
+binnen de budgetdag, omdat Google het request mogelijk al ontvangen heeft. Ook
+een crash vlak vóór verzending kan dus één ongebruikte budgetplek kosten.
+Eerder afgeronde successen en eerder gereserveerd budget blijven behouden.
+
+`python cli.py status` toont verbruik, successen, fouten en onbekende/lopende
+uitkomsten apart. Bestaande `api_log`-regels van vóór deze wijziging blijven voor
+het dagbudget meetellen; historische uitkomsten worden niet gereconstrueerd.
+`init_db()` maakt de nieuwe registratietabel bij de eerstvolgende run aan.
+
+---
+
 ## Veilige sitemapscans
 
 Elke scan geeft URLs én een volledigheidsstatus terug. Een HTTP-fout (zoals een
