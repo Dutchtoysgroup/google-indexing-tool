@@ -1,6 +1,7 @@
 """CLI interface voor de Google Indexing Tool."""
 
 import logging
+import json
 import sys
 
 import click
@@ -13,6 +14,7 @@ from db.queries import (
     get_daily_api_usage,
     get_daily_indexing_outcomes,
     get_priority_schedule_summary,
+    get_snapshot_history,
 )
 from collectors.sitemap import SitemapCollector
 from inspectors.url_inspector import URLInspector
@@ -34,9 +36,9 @@ def setup_logging(verbose: bool = False):
 @click.option("--verbose", "-v", is_flag=True, help="Verbose logging")
 @click.pass_context
 def cli(ctx, verbose):
-    """Google Indexing Tool — monitor en push URLs naar de Google Indexing API."""
+    """Google Indexing Tool — monitor indexering via sitemaps en URL Inspection."""
     setup_logging(verbose)
-    if ctx.invoked_subcommand != "run":
+    if ctx.invoked_subcommand not in {"run", "diagnostics"}:
         init_db()
 
 
@@ -110,8 +112,7 @@ def inspect(shop, limit):
 @click.option("--shop", "-s", default=None, help="Shop ID (filter)")
 @click.option("--limit", "-l", default=None, type=int, help="Max URLs om te pushen")
 def push(shop, limit):
-    """Push niet-geIndexeerde URLs via de Indexing API."""
-    pusher = IndexingPusher()
+    """Meld alleen toegestane vacature- en livestream-URLs aan Google."""
     urls = get_push_urls()
 
     if shop:
@@ -121,18 +122,22 @@ def push(shop, limit):
         urls = urls[:limit]
 
     if not urls:
-        click.echo("Geen URLs om te pushen.")
+        click.echo("Geen toegestane URLs voor een Indexing API-melding.")
         return
 
-    click.echo(f"{len(urls)} URLs worden gepusht...")
-    count = pusher.push_batch(urls)
-    click.echo(f"\n{count} URLs succesvol gepusht")
+    click.echo(f"{len(urls)} URLs worden gecontroleerd voor een melding...")
+    count = IndexingPusher().push_batch(urls)
+    click.echo(f"\n{count} notification accepted; dit bevestigt geen indexering")
 
 
 @cli.command()
 @click.option("--shop", "-s", default=None, help="Shop ID")
-def report(shop):
-    """Toon een statusrapport."""
+@click.option("--history", type=click.IntRange(0, 3650), default=0, help="Toon gemeten snapshots over dit aantal dagen (vereist --shop)")
+def report(shop, history):
+    """Toon gemeten indexeringsstatus uit URL Inspection."""
+    if history and not shop:
+        raise click.UsageError("--history vereist --shop")
+    click.echo("Indexed is gemeten via URL Inspection; een geaccepteerde melding telt niet als indexed.")
     if shop:
         shop_obj = get_shop_by_id(shop)
         if not shop_obj:
@@ -150,6 +155,16 @@ def report(shop):
         if stats['total_urls'] > 0:
             pct = (stats['indexed'] / stats['total_urls']) * 100
             click.echo(f"  Coverage:        {pct:.1f}%")
+        if history:
+            click.echo("\nSnapshots: laatst bekende inspectiestatus, geen live indexcontrole.")
+            click.echo(f"{'Datum':<12} {'Totaal':>8} {'Indexed':>8} {'Verschil':>9} {'Unknown':>8}")
+            previous = None
+            for row in get_snapshot_history(shop, history):
+                indexed = row["indexed_count"]
+                delta = "-" if previous is None else f"{indexed - previous:+d}"
+                click.echo(f"{row['date']:<12} {row['total_urls']:>8} {indexed:>8} {delta:>9} {row['unknown_count']:>8}")
+                previous = indexed
+            click.echo("Verschillen kunnen ook door sitemapwijzigingen of nieuwe inspecties ontstaan; dit bewijst geen versnelling.")
     else:
         summaries = get_all_shops_summary()
         if not summaries:
@@ -180,6 +195,22 @@ def report(shop):
 
 
 @cli.command()
+@click.argument("run_report", type=click.Path(exists=True, dir_okay=False))
+@click.option("--shop", default=None, help="Filter op shop-ID")
+def diagnostics(run_report, shop):
+    """Toon canonical/noindex-diagnose uit een bewaard runrapport (geen live check)."""
+    with open(run_report, encoding="utf-8") as stream:
+        data = json.load(stream)
+    observations = []
+    for shop_id, outcome in data.get("shops", {}).items():
+        if shop and shop_id != shop:
+            continue
+        for observed in outcome.get("phases", {}).get("inspect", {}).get("observations", []):
+            observations.append({"shop_id": shop_id, **observed})
+    click.echo(json.dumps({"run_id": data.get("run_id"), "observations": observations}, ensure_ascii=False, indent=2))
+
+
+@cli.command()
 def status():
     """Toon API usage van vandaag."""
     click.echo("\nAPI Usage vandaag:")
@@ -193,7 +224,7 @@ def status():
             outcomes = get_daily_indexing_outcomes(s.shop_id)
             click.echo(
                 f"  {s.shop_id}: {inspections} inspections, {pushes} quotumplaatsen gebruikt; "
-                f"{outcomes['succeeded']} geslaagd, {outcomes['failed']} mislukt, "
+                f"{outcomes['notification_accepted']} notification accepted, {outcomes['failed']} mislukt, "
                 f"{outcomes['unknown']} onbekend/in behandeling"
             )
 
@@ -202,14 +233,14 @@ def status():
     outcomes = get_daily_indexing_outcomes()
     click.echo(
         f"\n  Totaal: {total_inspections} inspections, {total_pushes} quotumplaatsen gebruikt; "
-        f"{outcomes['succeeded']} geslaagd, {outcomes['failed']} mislukt, "
+        f"{outcomes['notification_accepted']} notification accepted, {outcomes['failed']} mislukt, "
         f"{outcomes['unknown']} onbekend/in behandeling"
     )
 
 
 @cli.group()
 def priority():
-    """Beheer priority URLs: handmatig versneld indexeren."""
+    """Plan meldingen voor toegestane vacature- en livestream-URLs."""
     pass
 
 
@@ -256,7 +287,8 @@ def priority_add(file_path, urls_arg, source):
         sys.exit(1)
 
     result = schedule_priority_urls(urls, source=source)
-    click.echo(f"\nIngepland: {result['inserted']} URLs")
+    click.echo(f"\nIngepland: {result['inserted']} notificaties (geen bevestiging van indexering)")
+    click.echo(f"  Niet ondersteund: {result['not_supported']}")
     click.echo(f"  Aangeboden:        {result['received']}")
     click.echo(f"  Na dedup:          {result['deduped']}")
     click.echo(f"  Duplicaat in db:   {result['skipped_duplicate']}")
@@ -279,11 +311,11 @@ def priority_list(days):
     if not summary:
         click.echo("Geen priority URLs gepland.")
         return
-    click.echo(f"\n{'Datum':<12} {'Pending':>8} {'Pushed':>8} {'Failed':>8}")
+    click.echo(f"\n{'Datum':<12} {'Pending':>8} {'Accepted':>8} {'Failed':>8} {'Unsupported':>12}")
     click.echo("-" * 40)
     for row in summary:
         click.echo(
-            f"{row['scheduled_date']:<12} {row['pending']:>8} {row['pushed']:>8} {row['failed']:>8}"
+            f"{row['scheduled_date']:<12} {row['pending']:>8} {row['notification_accepted']:>8} {row['failed']:>8} {row['not_supported']:>12}"
         )
 
 

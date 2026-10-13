@@ -15,12 +15,12 @@ Per run (bijvoorbeeld dagelijks):
   ┌─────────────────┐   ┌───────────────────┐   ┌───────────────────┐   ┌──────────────────┐
   │ Sitemaps        │   │ Google URL        │   │ Google Indexing   │   │ Statistieken     │
   │ ophalen voor    │──▶│ Inspection API    │──▶│ API aanroepen     │──▶│ opslaan voor     │
-  │ alle shops      │   │ status per URL    │   │ voor failed URLs  │   │ trends/dashboard │
+  │ alle shops      │   │ status per URL    │   │ alleen toegestaan  │   │ trends/dashboard │
   └─────────────────┘   └───────────────────┘   └───────────────────┘   └──────────────────┘
         │                       │                       │                       │
    alle URLs              max 2.000/shop/dag       max 200/dag             1 snapshot
-   in database            Status per URL            prioriteit:            per shop
-                          PASS / NEUTRAL / FAIL     collections eerst      per dag
+   in database            Status per URL            opt-in:               per shop
+                          PASS / NEUTRAL / FAIL     vacature/livestream      per dag
 ```
 
 ---
@@ -57,6 +57,7 @@ Per run (bijvoorbeeld dagelijks):
   - **Coverage state** — Reden, bijvoorbeeld "Submitted and indexed", "Crawled - currently not indexed", "Discovered - currently not indexed".
   - **Robots.txt-status** — Of Google de pagina mag crawlen.
   - **Last crawl time** — Wanneer Google de pagina voor het laatst bezocht.
+  - **Canonicals/noindex** — Door Google gekozen en gedeclareerde canonical, indexingState, robots- en fetchstatus; inclusief diagnose en observatietijd in het runrapport.
 
 **Welke URLs worden eerst gecheckt?**
 
@@ -75,32 +76,23 @@ De tool gebruikt een prioriteitssysteem in `scheduler/strategy.py`:
 
 ---
 
-## Stap 3: Push (indexering aanvragen)
+## Stap 3: Optionele notificaties voor toegestane paginatypen
 
-**Wat gebeurt er?**
-- URLs met verdict `NEUTRAL` of `FAIL` worden naar de Google Indexing API gestuurd met type `URL_UPDATED`.
-- Dit is een hint aan Google: "Kijk nog eens naar deze pagina."
+Algemene webshop-URLs worden niet aan `urlNotifications:publish` aangeboden.
+De route is standaard uitgeschakeld. Alleen expliciet geconfigureerde URLs met
+actueel geverifieerde `JobPosting`- of livestream-structured-data mogen door.
+Zie [configuratie en typecontrole](README.md#indexing-api-expliciet-toegestaan-standaard-uit).
 
-**Welke URLs worden eerst gepusht?**
+Priority-meldingen gaan vóór reguliere meldingen voor toegestane URLs. Het
+verzoekbudget wordt gedeeld. Product-/categorie-URLs, ontbrekende toelating en
+onbekende paginatypen geven `not_supported`; een verificatiestoring geeft
+`validation_failed`. Er volgt in beide gevallen geen publish-aanroep.
 
-| Prioriteit | Type | Reden |
-|------------|------|-------|
-| 1 (hoog)   | `collection` | Categoriepagina's wegen vaak het zwaarst voor SEO |
-| 2          | `product`    | Productpagina's genereren omzet |
-| 3          | `page`       | Informatiepagina's |
-| 4          | `blog`       | Blogartikelen |
-| 5          | `faq`        | Ondersteunende content |
-| 6 (laag)   | `other`      | Restcategorie |
-
-URLs die nog nooit zijn gepusht hebben voorrang boven URLs die al eerder zijn gepusht.
-
-**Limieten**
-- Google staat **200 pushes per dag** toe over alle eigendommen samen.
-- Een URL wordt pas opnieuw gepusht na minimaal **3 dagen** sinds de vorige push.
-- De `push_count` in de database houdt bij hoe vaak elke URL is gepusht.
-
-**Werkt het altijd?**
-- Nee. De Indexing API is officieel voor vacatures (`JobPosting`) en livestream-events. In de praktijk werkt hij vaak ook voor productpagina's, maar Google geeft geen garantie. Het is een *signaal*, geen commando.
+HTTP 200 wordt vastgelegd als **`notification_accepted`**. Dit verandert geen
+inspectieverdict en telt niet als `indexed`. De velden `last_pushed`/`push_count`
+bewaren historisch alleen notificatieacceptatie. Werkelijke indexering wordt
+uitsluitend via URL Inspection waargenomen. Notificaties blijven optioneel en
+bepalen niet of de noodzakelijke monitoringfasen geslaagd zijn.
 
 ---
 
@@ -113,7 +105,10 @@ Per shop wordt aan het einde van een run een snapshot opgeslagen met:
 - Aantal `NEUTRAL` / `FAIL` (niet geïndexeerd)
 - Aantal `UNKNOWN` (nog niet gecheckt)
 
-Deze snapshots vullen de trendgrafiek in het dashboard.
+Deze snapshots vullen de trendgrafiek in het dashboard. Bekijk ze ook met
+`python cli.py report --shop SHOP_ID --history 30`. Notificatieacceptaties tellen
+niet als geïndexeerde URLs. Het betreft de laatst bekende inspectiestatus, geen
+live controle of bewijs van versnelde indexering.
 
 ---
 
@@ -136,7 +131,8 @@ wel een geslaagde inspectie: het is de indexeringsstatus van de pagina.
 
 Daglimieten en een lege planning zijn normale situaties en maken de run niet
 onvolledig. Push blijft een **optionele** fase met een gedeeld quotum: de aparte
-`push`-uitkomst bevat batchaantallen en fouten, maar bepaalt de exitcode niet.
+`push`-uitkomst bevat `notification_accepted`-aantallen, URL-uitkomsten en fouten,
+maar bepaalt de exitcode niet.
 
 ### Duurzaam JSON-rapport
 
@@ -217,7 +213,7 @@ on:
 
 ### Tijdsbudget
 
-In de workflow staat `TIME_BUDGET_MINUTES: "30"`. Dit budget geldt alleen voor scan + inspect. Push en snapshot lopen daarna altijd door, zodat het dagelijkse Google-pushbudget volledig benut wordt — ook als de inspect-fase voortijdig stopt.
+`TIME_BUDGET_MINUTES`, indien ingesteld, geldt alleen voor scan + inspect. De optionele notificatiefase en snapshots lopen daarna door. Het dagquotum is een bovengrens; er worden geen product-URLs verstuurd om het op te vullen.
 
 Lokaal of op een eigen server gelden geen tijdsbudgetten: laat `TIME_BUDGET_MINUTES` weg en de tool draait door tot alles klaar is.
 
@@ -314,13 +310,13 @@ Het bijbehorende dashboard (apart project) leest dezelfde Neon-database en hoeft
 ## Veelgestelde vragen
 
 **Worden oude inspecties overschreven?**
-Ja. Per URL bewaren we alleen de meest recente inspectiestatus (je wilt altijd het laatste verdict weten). Maar de **dagelijkse snapshots** worden nooit overschreven — elke dag krijgt een eigen rij. Zo blijft de historische trend behouden.
+Ja. Per URL bewaren we alleen de meest recente inspectiestatus (je wilt altijd het laatste verdict weten). Een nieuwe run op dezelfde dag werkt de snapshot van die dag bij; eerdere dagen behouden hun eigen rij. Zo blijft de historische trend behouden.
 
 **Waarom verschilt het aantal URLs van wat Google Search Console toont?**
 Deze tool telt alleen URLs uit je sitemap. Search Console telt álles wat Google ooit ontdekt heeft, inclusief parameter-varianten, oude pagina's en duplicaten. Onze telling is meestal kleiner én relevanter.
 
 **Wat als Google de Indexing API blokkeert?**
-De Indexing API is officieel voor vacatures en livestreams. Voor andere content kan Google verzoeken negeren of weigeren. De tool logt dit als waarschuwing en gaat verder. URL Inspection (status checken) blijft altijd werken.
+De tool verstuurt uitsluitend toegestane vacature-/livestream-notificaties. Een weigering wordt als notificatiefout geregistreerd; producten blijven via sitemaps en URL Inspection gemonitord. Een notificatie zegt niets over daadwerkelijke indexering.
 
 **Kost het geld?**
 Nee, niet als je binnen de gratis tiers blijft:

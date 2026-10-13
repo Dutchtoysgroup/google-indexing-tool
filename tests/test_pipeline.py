@@ -135,6 +135,25 @@ class PipelineTests(unittest.TestCase):
         self.post.assert_not_called()
         self.assertEqual(self.report()["shops"]["shop_nl"]["phases"]["inspect"]["skipped"], 1)
 
+    def test_product_observations_preserve_canonical_and_noindex_diagnosis(self):
+        self.select.side_effect = lambda sid: [{"url": f"https://{sid}/product", "url_type": "product"}]
+        self.post.return_value.json.return_value = {"inspectionResult": {"indexStatusResult": {
+            "verdict": "NEUTRAL", "googleCanonical": "https://shop_nl/other",
+            "userCanonical": "https://shop_nl/product", "indexingState": "BLOCKED_BY_META_TAG",
+            "robotsTxtState": "ALLOWED", "sitemap": ["https://shop_nl/sitemap.xml"],
+        }}}
+        self.assertEqual(main.main(), 0)
+        observed = self.report()["shops"]["shop_nl"]["phases"]["inspect"]["observations"][0]
+        self.assertEqual(observed["indexed_status"], "not_indexed")
+        self.assertEqual(observed["url_type"], "product")
+        self.assertTrue(observed["noindex"])
+        self.assertTrue(observed["canonical_mismatch"])
+        self.assertIn("observed_at", observed)
+        with patch("cli.init_db", side_effect=AssertionError("diagnostics needs no database")):
+            result = CliRunner().invoke(cli.cli, ["diagnostics", str(next(self.directory.glob("*.json"))), "--shop", "shop_nl"])
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(json.loads(result.output)["observations"][0]["google_canonical"], "https://shop_nl/other")
+
     def test_no_work_does_not_require_google_auth(self):
         self.select.side_effect = None
         self.select.return_value = []

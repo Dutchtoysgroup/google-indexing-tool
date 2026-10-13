@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 
+from config.indexing_api import get_eligible_pages
 from config.settings import (
     INSPECTION_DAILY_LIMIT_PER_SHOP,
     INDEXING_DAILY_LIMIT,
@@ -17,6 +18,7 @@ from db.queries import (
     get_urls_to_push,
     get_daily_api_usage,
     get_priority_urls_for_today,
+    exclude_unsupported_priority_urls,
 )
 
 logger = logging.getLogger(__name__)
@@ -74,6 +76,10 @@ def get_priority_push_urls(budget: int | None = None) -> list[dict]:
     voor in de wachtrij. Wanneer `budget` is opgegeven wordt de lijst beperkt
     tot dat aantal.
     """
+    allowed = list(get_eligible_pages())
+    exclude_unsupported_priority_urls(allowed)
+    if not allowed:
+        return []
     used = get_daily_api_usage("indexing")
     remaining = INDEXING_DAILY_LIMIT - used
     if remaining <= 0:
@@ -84,24 +90,28 @@ def get_priority_push_urls(budget: int | None = None) -> list[dict]:
         return []
 
     urls = get_priority_urls_for_today(limit=cap)
+    urls = [row for row in urls if row["url"] in allowed]
     if urls:
         logger.info(f"  {len(urls)} priority URLs geselecteerd om te pushen")
     return urls
 
 
 def get_push_urls() -> list[dict]:
-    """Bepaal welke URLs vandaag gepusht moeten worden.
+    """Selecteer toegestane notificaties; dit zegt niets over indexering.
 
     Respecteert het dagelijks limiet van 200 URLs totaal. Priority URLs zijn
     al apart afgehandeld door `get_priority_push_urls`, deze functie levert
     alleen de reguliere niet-geïndexeerde URLs.
     """
+    allowed = list(get_eligible_pages())
+    if not allowed:
+        return []
     used = get_daily_api_usage("indexing")
     budget = INDEXING_DAILY_LIMIT - used
     if budget <= 0:
         logger.info(f"Push limiet bereikt ({used}/{INDEXING_DAILY_LIMIT})")
         return []
 
-    urls = get_urls_to_push(limit=budget)
+    urls = get_urls_to_push(limit=budget, allowed_urls=allowed)
     logger.info(f"  {len(urls)} URLs geselecteerd om te pushen")
     return urls

@@ -179,7 +179,7 @@ def complete_indexing_request(
     request_id: int, outcome: str, http_status: int | None = None,
     error: str | None = None,
 ):
-    """Boek uitkomst, URL-succes en priority-status atomair, maximaal één keer."""
+    """Record notification outcome atomically once; succeeded never means indexed."""
     if outcome not in {"succeeded", "failed", "unknown"}:
         raise ValueError("Ongeldige indexing-uitkomst")
     conn = get_connection()
@@ -205,7 +205,7 @@ def complete_indexing_request(
                             pushed_at = CASE WHEN %s THEN NOW() ELSE NULL END
                         WHERE id = %s
                     """, (
-                        "pushed" if outcome == "succeeded" else "failed", error,
+                        "notification_accepted" if outcome == "succeeded" else "failed", error,
                         outcome == "succeeded", request["priority_id"],
                     ))
         conn.commit()
@@ -222,7 +222,8 @@ def get_daily_indexing_outcomes(shop_id: str | None = None) -> dict:
     try:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT COUNT(*) FILTER (WHERE outcome = 'succeeded') AS succeeded,
+                SELECT COUNT(*) FILTER (WHERE outcome = 'succeeded') AS notification_accepted,
+                       COUNT(*) FILTER (WHERE outcome = 'succeeded') AS succeeded,
                        COUNT(*) FILTER (WHERE outcome = 'failed') AS failed,
                        COUNT(*) FILTER (WHERE outcome IN ('reserved', 'unknown')) AS unknown
                 FROM indexing_requests
@@ -311,29 +312,25 @@ def get_urls_stale_inspection(shop_id: str, days: int = 7, limit: int = 100) -> 
         conn.close()
 
 
-def get_urls_to_push(limit: int = 200) -> list[dict]:
-    """Niet-geIndexeerde URLs om te pushen, geprioriteerd."""
+def get_urls_to_push(limit: int = 200, allowed_urls: list[str] | None = None) -> list[dict]:
+    """Only explicitly eligible URLs; product/collection URLs never qualify."""
+    if not allowed_urls:
+        return []
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT shop_id, url, url_type, coverage_state FROM urls
                 WHERE verdict IS NOT NULL AND verdict != 'PASS'
+                  AND url = ANY(%s)
+                  AND COALESCE(url_type, '') NOT IN ('product', 'collection')
                   AND removed_from_sitemap = FALSE
                   AND (last_pushed IS NULL OR last_pushed < NOW() - INTERVAL '3 days')
                 ORDER BY
-                    CASE url_type
-                        WHEN 'collection' THEN 1
-                        WHEN 'product' THEN 2
-                        WHEN 'page' THEN 3
-                        WHEN 'blog' THEN 4
-                        WHEN 'faq' THEN 5
-                        ELSE 6
-                    END,
                     push_count ASC,
                     last_inspected DESC
                 LIMIT %s
-            """, (limit,))
+            """, (allowed_urls, limit))
             return cur.fetchall()
     finally:
         conn.close()
@@ -508,6 +505,39 @@ def insert_priority_urls(
         conn.close()
 
 
+def exclude_unsupported_priority_urls(allowed_urls: list[str]):
+    """Keep old queue entries for audit, but do not present them as scheduled work."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE priority_urls SET status = 'not_supported',
+                    push_error = 'Not eligible for Indexing API; use sitemap and URL Inspection monitoring'
+                WHERE status = 'pending' AND (
+                    NOT (url = ANY(%s)) OR EXISTS (
+                        SELECT 1 FROM urls u WHERE u.url = priority_urls.url
+                        AND u.url_type IN ('product', 'collection')
+                    )
+                )
+            """, (allowed_urls,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def mark_priority_not_supported(priority_id: int, reason: str):
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE priority_urls SET status = 'not_supported', push_error = %s
+                WHERE id = %s
+            """, (reason, priority_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def get_priority_urls_for_today(limit: int | None = None) -> list[dict]:
     """Haal pending priority URLs op voor vandaag (inclusief achterstallige)."""
     conn = get_connection()
@@ -548,7 +578,9 @@ def get_priority_schedule_summary(days_ahead: int = 30) -> list[dict]:
                 SELECT
                     scheduled_date::text AS scheduled_date,
                     COUNT(*) FILTER (WHERE status = 'pending')::int  AS pending,
-                    COUNT(*) FILTER (WHERE status = 'pushed')::int   AS pushed,
+                    COUNT(*) FILTER (WHERE status IN ('pushed', 'notification_accepted'))::int AS notification_accepted,
+                    COUNT(*) FILTER (WHERE status IN ('pushed', 'notification_accepted'))::int AS pushed,
+                    COUNT(*) FILTER (WHERE status = 'not_supported')::int AS not_supported,
                     COUNT(*) FILTER (WHERE status = 'failed')::int   AS failed
                 FROM priority_urls
                 WHERE scheduled_date >= CURRENT_DATE - INTERVAL '7 days'
@@ -628,6 +660,24 @@ def get_all_shops_summary() -> list[dict]:
                 GROUP BY shop_id
                 ORDER BY shop_id
             """)
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def get_snapshot_history(shop_id: str, days: int = 30) -> list[dict]:
+    """Measured daily coverage, based only on inspection verdicts (never pushes)."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT date::text, total_urls, indexed_count,
+                       not_indexed_count, unknown_count
+                FROM daily_snapshots
+                WHERE shop_id = %s
+                  AND date >= CURRENT_DATE - make_interval(days => %s)
+                ORDER BY date
+            """, (shop_id, days))
             return cur.fetchall()
     finally:
         conn.close()

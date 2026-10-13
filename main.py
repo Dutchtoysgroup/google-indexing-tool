@@ -34,8 +34,8 @@ def get_time_budget_seconds():
     - Niet gezet → None (geen limiet; Mac Mini / lokaal draait alles).
     - Gezet     → geldt voor stap 1 (scan) + stap 2 (inspect) samen. Stap 3
                   (push) en stap 4 (snapshot) lopen altijd door, zodat het
-                  Google-indexeringsbudget (200/dag) ook daadwerkelijk benut
-                  wordt op GitHub Actions waar runtime beperkt is.
+                  optionele meldingen voor toegestane paginatypen en de monitoring
+                  kunnen worden afgerond.
     """
     raw = os.environ.get("TIME_BUDGET_MINUTES")
     if not raw:
@@ -134,9 +134,9 @@ def main():
         else:
             report.phase(shop.shop_id, "inspect", status, **details)
 
-    # Push remains best effort and uses the shared daily quota. Always continue
+    # Only eligible JobPosting/live video notifications; acceptance is not indexing. Always continue
     # to snapshots, even if authentication, scheduling or pushing raises.
-    logger.info("--- Stap 3: URLs pushen ---")
+    logger.info("--- Stap 3: Notificaties voor toegestane pagina’s ---")
     report.data["push"] = {"required": False, "status": "running", "batches": []}
     report.save()
     try:
@@ -146,13 +146,15 @@ def main():
             ("regular", get_push_urls, "push_batch"),
         ):
             urls = select()
-            succeeded = 0
+            accepted = 0
+            outcomes = []
             if urls:
                 if pusher is None:
                     pusher = IndexingPusher()
-                succeeded = getattr(pusher, method)(urls)
+                accepted = getattr(pusher, method)(urls)
+                outcomes = pusher.last_batch_outcomes
             report.data["push"]["batches"].append(
-                {"kind": kind, "selected": len(urls), "succeeded": succeeded}
+                {"kind": kind, "selected": len(urls), "notification_accepted": accepted, "outcomes": outcomes}
             )
             report.save()
     except Exception as exc:
@@ -161,7 +163,7 @@ def main():
     else:
         batches = report.data["push"]["batches"]
         report.data["push"]["status"] = (
-            "success" if all(b["selected"] == b["succeeded"] for b in batches) else "incomplete"
+            "incomplete" if any(o["status"] in {"failed", "validation_failed", "unknown"} for b in batches for o in b["outcomes"]) else "success"
         )
     report.save()
 

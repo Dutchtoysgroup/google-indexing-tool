@@ -29,12 +29,4 @@ RETRY_INTERVAL_DAYS = 3   # opnieuw inspecteren na X dagen bij failure
 RESCAN_INTERVAL_DAYS = 7  # volledige rescan na X dagen
 BATCH_SIZE = 100           # URLs per batch in CLI
 
-# URL type prioriteit voor pushen (lager = hogere prioriteit)
-PUSH_PRIORITY = {
-    "collection": 1,
-    "product": 2,
-    "page": 3,
-    "blog": 4,
-    "faq": 5,
-    "other": 6,
-}
+# Indexing API eligibility is explicit in config/indexing_api.py.

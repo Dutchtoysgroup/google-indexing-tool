@@ -16,3 +16,5 @@ data/logs/
 .claude/
 
 data/pipeline-runs/
+
+config/indexing-pages.json

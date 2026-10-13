@@ -22,7 +22,7 @@ class RunReport:
         directory.mkdir(parents=True, exist_ok=True)
         self.path = directory / f"{run_id}.json"
         self.data = {
-            "schema_version": 1,
+            "schema_version": 2,
             "run_id": run_id,
             "started_at": timestamp(),
             "finished_at": None,

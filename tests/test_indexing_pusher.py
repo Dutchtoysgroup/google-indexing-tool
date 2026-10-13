@@ -10,6 +10,8 @@ from pushers.indexing_pusher import IndexingPusher
 
 def pusher():
     result = IndexingPusher.__new__(IndexingPusher)
+    result.allowed_pages = {row["url"]: "JobPosting" for row in ROWS}
+    result.allowed_pages["https://unknown.example/p"] = "JobPosting"
     result.credentials = SimpleNamespace(valid=True, token="test-token")
     return result
 
@@ -19,6 +21,11 @@ ROWS = [{"shop_id": "A", "url": "https://a.example/p"},
 
 
 class PushTests(unittest.TestCase):
+    def setUp(self):
+        verification = patch("pushers.indexing_pusher.verify_page_type", return_value=(True, "Verified JobPosting"))
+        verification.start()
+        self.addCleanup(verification.stop)
+
     def test_mixed_results_are_recorded_for_the_actual_request(self):
         with patch("pushers.indexing_pusher.reserve_indexing_request", side_effect=[10, 11]) as reserve, patch(
             "pushers.indexing_pusher.complete_indexing_request"

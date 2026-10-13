@@ -1,7 +1,8 @@
 """Priority URL ingestion - parse input en plan in voor push-runs.
 
-Een priority URL is een URL die de gebruiker handmatig versneld geïndexeerd wil
-zien. Priority URLs verbruiken het reguliere dagelijkse push-quotum (200/dag)
+Een priority URL is een toegestane JobPosting- of livestream-URL waarvoor de
+gebruiker een melding wil indienen; acceptatie bevestigt geen indexering.
+Priority URLs verbruiken het reguliere dagelijkse push-quotum (200/dag)
 maar gaan voor in de wachtrij. Wanneer er meer dan 200 worden aangeboden voor
 dezelfde dag worden ze automatisch over opeenvolgende dagen verdeeld.
 """
@@ -15,6 +16,7 @@ import re
 from datetime import date
 from pathlib import Path
 
+from config.indexing_api import get_eligible_pages
 from config.settings import INDEXING_DAILY_LIMIT
 from config.shops import get_shop_for_url
 from db.queries import insert_priority_urls
@@ -107,6 +109,8 @@ def schedule_priority_urls(
     if daily_limit is None:
         daily_limit = INDEXING_DAILY_LIMIT
 
+    allowed = get_eligible_pages()
+    unsupported = []
     rows: list[tuple[str, str | None]] = []
     seen: set[str] = set()
     unmapped: list[str] = []
@@ -114,6 +118,9 @@ def schedule_priority_urls(
         if not url or url in seen:
             continue
         seen.add(url)
+        if url not in allowed:
+            unsupported.append(url)
+            continue
         shop = get_shop_for_url(url)
         if shop is None:
             unmapped.append(url)
@@ -125,6 +132,8 @@ def schedule_priority_urls(
         daily_limit=daily_limit,
         start_date=start_date,
     )
+    result["not_supported"] = len(unsupported)
+    result["not_supported_sample"] = unsupported[:5]
     result["received"] = len(urls)
     result["deduped"] = len(rows)
     result["unmapped"] = len(unmapped)

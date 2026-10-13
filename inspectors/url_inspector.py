@@ -19,6 +19,8 @@ from config.settings import (
     SERVICE_ACCOUNT_KEY_PATH,
 )
 from db.queries import update_inspection_result, get_daily_api_usage, log_api_usage
+from inspectors.diagnostics import diagnose
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +35,7 @@ class InspectionBatchResult:
     succeeded: int = 0
     skipped: int = 0
     errors: list[dict] = field(default_factory=list)
+    observations: list[dict] = field(default_factory=list)
 
     @property
     def status(self):
@@ -120,6 +123,10 @@ class URLInspector:
             "robots_txt_state": index_status.get("robotsTxtState"),
             "indexing_state": index_status.get("indexingState"),
             "last_crawl_time": index_status.get("lastCrawlTime"),
+            "google_canonical": index_status.get("googleCanonical"),
+            "user_canonical": index_status.get("userCanonical"),
+            "page_fetch_state": index_status.get("pageFetchState"),
+            "sitemaps": index_status.get("sitemap", []),
         }
 
         return result
@@ -161,6 +168,13 @@ class URLInspector:
                 if result:
                     update_inspection_result(shop_id, url, result)
                     batch.succeeded += 1
+                    diagnosis = diagnose(url, result)
+                    batch.observations.append({
+                        "url": url, "url_type": url_row.get("url_type"),
+                        "observed_at": datetime.now(timezone.utc).isoformat(),
+                        **result, **diagnosis,
+                    })
+                    logger.info(f"  [OBSERVED] {url}: {diagnosis}")
                     logger.info(f"  [{result.get('verdict', '?')}] {url}")
                 else:
                     batch.errors.append({"url": url, "error": self.last_error or "Inspection failed"})

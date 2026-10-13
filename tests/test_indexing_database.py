@@ -18,6 +18,7 @@ from db.models import SCHEMA_SQL
 from db.queries import (
     reserve_indexing_request, complete_indexing_request,
     get_daily_api_usage, get_daily_indexing_outcomes, log_api_usage,
+    get_urls_to_push, exclude_unsupported_priority_urls, get_snapshot_history,
 )
 
 
@@ -38,6 +39,9 @@ class IndexingDatabaseTests(unittest.TestCase):
         self.db_patch.start()
         self.delay_patch = patch("pushers.indexing_pusher.INDEXING_DELAY_SECONDS", 0)
         self.delay_patch.start()
+        verification = patch("pushers.indexing_pusher.verify_page_type", return_value=(True, "Verified JobPosting"))
+        verification.start()
+        self.addCleanup(verification.stop)
 
     def connect(self):
         return psycopg2.connect(
@@ -103,7 +107,9 @@ def post(*args, **kwargs):
 
 with patch("db.queries.get_connection", side_effect=connect), patch(
     "pushers.indexing_pusher.requests.post", side_effect=post
-), patch("pushers.indexing_pusher.INDEXING_DELAY_SECONDS", 0):
+), patch("pushers.indexing_pusher.INDEXING_DELAY_SECONDS", 0), patch(
+    "pushers.indexing_pusher.verify_page_type", return_value=(True, "Verified JobPosting")
+):
     pusher().push_batch(ROWS)
 '''
         env = {**os.environ, "TEST_SCHEMA": self.schema}
@@ -155,7 +161,7 @@ with patch("db.queries.get_connection", side_effect=connect), patch(
             self.assertEqual(pusher().push_batch(ROWS), 0)
             self.assertEqual(post.call_count, 2)
         self.assertEqual(self.rows("SELECT shop_id, status, pushed_at IS NOT NULL FROM priority_urls ORDER BY id"), [
-            ("A", "failed", False), ("B", "pushed", True),
+            ("A", "failed", False), ("B", "notification_accepted", True),
         ])
         self.assertEqual(get_daily_indexing_outcomes("A")["succeeded"], 0)
         self.assertEqual(get_daily_indexing_outcomes("B")["succeeded"], 1)
@@ -169,3 +175,31 @@ with patch("db.queries.get_connection", side_effect=connect), patch(
         self.assertEqual(get_daily_api_usage("indexing", "__priority_unmapped__"), 1)
         self.assertEqual(get_daily_indexing_outcomes()["succeeded"], 1)
         self.assertEqual(get_daily_indexing_outcomes("A")["succeeded"], 0)
+
+
+    def test_product_selection_and_legacy_queue_are_excluded(self):
+        with self.admin.cursor() as cur:
+            cur.execute("UPDATE urls SET verdict = 'NEUTRAL', url_type = CASE shop_id WHEN 'A' THEN 'product' ELSE 'page' END")
+            for row in ROWS:
+                cur.execute("INSERT INTO priority_urls (shop_id, url) VALUES (%s, %s)", (row["shop_id"], row["url"]))
+        allowed = [r["url"] for r in ROWS]
+        self.assertEqual([r["shop_id"] for r in get_urls_to_push(allowed_urls=allowed)], ["B"])
+        exclude_unsupported_priority_urls(allowed)
+        self.assertEqual(self.rows("SELECT shop_id, status FROM priority_urls ORDER BY shop_id"), [("A", "not_supported"), ("B", "pending")])
+        exclude_unsupported_priority_urls([])
+        self.assertEqual(self.rows("SELECT COUNT(*) FROM priority_urls WHERE status = 'not_supported'"), [(2,)])
+
+    def test_notification_acceptance_does_not_change_measured_indexing(self):
+        with self.admin.cursor() as cur:
+            cur.execute("UPDATE urls SET verdict = 'NEUTRAL'")
+        request_id = reserve_indexing_request("A", ROWS[0]["url"], 5)
+        complete_indexing_request(request_id, "succeeded", http_status=200)
+        self.assertEqual(self.rows("SELECT verdict FROM urls WHERE shop_id = 'A'"), [("NEUTRAL",)])
+        self.assertEqual(get_daily_indexing_outcomes()["notification_accepted"], 1)
+
+    def test_snapshot_history_reads_measured_counts(self):
+        with self.admin.cursor() as cur:
+            cur.execute("INSERT INTO daily_snapshots (shop_id, date, total_urls, indexed_count) VALUES ('A', CURRENT_DATE, 10, 3)")
+        history = get_snapshot_history("A", 30)
+        self.assertEqual(history[0]["indexed_count"], 3)
+        self.assertEqual(history[0]["total_urls"], 10)

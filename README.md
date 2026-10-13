@@ -7,13 +7,77 @@
 > service-account-sleutel alleen voor die run door. Oude Neon-instructies
 > hieronder zijn historisch en gelden niet meer voor productie.
 
-Automatische tool die de indexeringsstatus van je webshops in Google monitort en niet-geïndexeerde URLs naar Google pusht via de officiële Indexing API.
+Automatische tool die webshop-URLs monitort via sitemaps, Google URL Inspection en dagelijkse snapshots. Producten worden niet naar de Indexing API gestuurd.
 
 De tool is generiek: of je nu één webshop hebt of er twintig, je vult zelf je domeinen, talen en Google-account in.
 
 ---
 
-## Pushregistratie en quotum
+## Indexing API: expliciet toegestaan, standaard uit
+
+Google ondersteunt deze API uitsluitend voor pagina's met `JobPosting` of een
+`BroadcastEvent` binnen een `VideoObject`. HTTP 200 bevestigt ontvangst van een
+melding, niet dat een pagina is geïndexeerd. Zie de
+[officiële Indexing API-documentatie](https://developers.google.com/search/apis/indexing-api/v3/using-api).
+
+Zonder `config/indexing-pages.json` (of met `{}`) verstuurt de tool geen meldingen.
+Het voorbeeldbestand `config/indexing-pages.example.json` is bewust leeg.
+Alleen voor daadwerkelijk gecontroleerde vacatures of livestreams kun je exacte
+HTTPS-URLs opnemen, bijvoorbeeld:
+
+```json
+{
+  "https://www.voorbeeld.nl/vacatures/designer": "JobPosting",
+  "https://www.voorbeeld.nl/live/presentatie": "BroadcastEvent"
+}
+```
+
+Dit bestand is eigen configuratie en staat niet in git. Met `INDEXING_PAGES_FILE`
+kun je een ander pad aanwijzen, bijvoorbeeld blijvende Azure-opslag. Alleen
+configureren is niet genoeg: vlak vóór de melding controleert de tool de huidige
+JSON-LD. Een livestream vereist `VideoObject.publication` met `BroadcastEvent`
+en `isLiveBroadcast: true` (ook via een `@id`-verwijzing). Product-/ProductGroup-
+markup, bekende product-/categorie-URLs, ontbrekende/ongeldige markup, redirects
+en verificatiefouten worden geblokkeerd. Microdata/RDFa wordt door deze guard
+niet ondersteund; twijfel leidt tot geen melding. Deze typecontrole vervangt
+geen inhoudelijke controle van Googles richtlijnen.
+
+Deze bescherming geldt ook voor directe pusher-aanroepen en oude queue-items.
+Er is geen typekeuze waarmee een product als ondersteund wordt gepresenteerd.
+
+### Notificatie en indexering blijven afzonderlijk
+
+- Notificaties: `notification_accepted`, `failed`, `validation_failed`,
+  `not_supported`, `unknown` of `quota_deferred` in de runrapporten.
+- Indexering: `indexed`, `not_indexed` of `unknown`, uitsluitend afgeleid van
+  URL Inspection. Een geaccepteerde notificatie wijzigt geen `verdict`.
+- Bestaande databasekolommen `last_pushed` en `push_count` blijven om compatibiliteit
+  behouden; ze tellen alleen geaccepteerde meldingen. Ze zijn geen bewijs van
+  indexering of ondersteund historisch gebruik. Oude priority-status `pushed`
+  wordt in samenvattingen als geaccepteerde melding geteld; nieuwe records gebruiken
+  `notification_accepted`. De bestaande request-uitkomst `succeeded` betekent
+  eveneens uitsluitend notificatieacceptatie; hiervoor is geen extra schemamigratie nodig.
+- Het API-dagquotum telt duurzame reserveringen voor verzoekpogingen, ook als
+  Google ze niet accepteert of de uitkomst door een onderbreking onbekend blijft.
+  Niet-ondersteunde pagina's reserveren geen quotum.
+
+### Productmonitoring en diagnose
+
+De sitemap bepaalt de gemonitorde URLs. URL Inspection levert de laatst bekende
+indexstatus. Runrapporten (schema-versie 2) bewaren per succesvolle inspectie
+`observed_at`, `url_type`, canonicals, noindex-/robots-signalen, fetchstatus en
+bij Google bekende sitemaps onder `phases.inspect.observations`. Deze velden komen
+uit de [URL Inspection-resultaten](https://developers.google.com/webmaster-tools/v1/urlInspection.index/UrlInspectionResult).
+Ontbrekende canonical/noindex-signalen blijven onbekend (`null`). Canonicals worden
+als exacte URLs vergeleken; een verschil is een diagnostisch signaal.
+
+`report --shop SHOP_ID --history 30` toont de dagelijkse snapshots en het verschil
+in aantal geïndexeerde URLs. Het zijn laatst bekende inspectiestanden; ze kunnen
+ouder zijn dan de snapshot en de wijziging kan ook uit nieuwe/verwijderde URLs
+voortkomen. Dit meet ontwikkeling, geen oorzakelijk effect of versnelling door
+notificaties. Lees bij onvolledige runs ook de fase-uitkomsten.
+
+## Notificatieregistratie en quotum
 
 Elke Indexing API-aanroep krijgt vóór verzending een duurzame reservering in
 `indexing_requests` met URL en webshop (en bij priority-pushes het wachtrij-ID).
@@ -34,7 +98,7 @@ binnen de budgetdag, omdat Google het request mogelijk al ontvangen heeft. Ook
 een crash vlak vóór verzending kan dus één ongebruikte budgetplek kosten.
 Eerder afgeronde successen en eerder gereserveerd budget blijven behouden.
 
-`python cli.py status` toont verbruik, successen, fouten en onbekende/lopende
+`python cli.py status` toont verbruik, geaccepteerde meldingen, fouten en onbekende/lopende
 uitkomsten apart. Bestaande `api_log`-regels van vóór deze wijziging blijven voor
 het dagbudget meetellen; historische uitkomsten worden niet gereconstrueerd.
 `init_db()` maakt de nieuwe registratietabel bij de eerstvolgende run aan.
@@ -93,7 +157,7 @@ De tool draait elke dag (lokaal of via GitHub Actions) en doorloopt vier stappen
 |------|-----|-----------|
 | 1. **Scan** | Haalt alle URLs op uit de sitemaps van je webshops | Volledige lijst van pagina's |
 | 2. **Inspect** | Vraagt aan Google: "Is deze URL geïndexeerd?" via de URL Inspection API | Status per URL |
-| 3. **Push** | Stuurt niet-geïndexeerde URLs naar Google via de Indexing API | Hint aan Google om opnieuw te kijken |
+| 3. **Notificatie (optioneel)** | Alleen expliciet toegestane JobPosting- en livestream-pagina's melden | `notification_accepted`; geen bewijs van indexering |
 | 4. **Snapshot** | Slaat dagelijkse statistieken op | Historie voor trendgrafieken |
 
 Alle data wordt opgeslagen in een PostgreSQL-database (we gebruiken Neon, dat een gratis tier heeft). Een apart dashboardproject (Next.js op Vercel) leest dezelfde database uit en toont de status visueel.
@@ -176,7 +240,7 @@ Een Google Cloud-project is de "container" waarin Google APIs voor jouw account 
 
 ### Stap 3 — Schakel twee Google APIs in
 
-Een API moet "aangezet" worden in je Google Cloud-project, anders weigert Google verzoeken. We hebben er twee nodig:
+Een API moet "aangezet" worden in je Google Cloud-project, anders weigert Google verzoeken. Voor productmonitoring is de Search Console API nodig. De Indexing API is alleen optioneel voor de hieronder toegestane paginatypen:
 
 #### API 1 — Google Search Console API
 
@@ -186,14 +250,14 @@ Een API moet "aangezet" worden in je Google Cloud-project, anders weigert Google
 4. Klik op de blauwe knop **"INSCHAKELEN"**
 5. Wacht tot de pagina laadt (je ziet een bevestiging).
 
-#### API 2 — Web Search Indexing API
+#### API 2 — Web Search Indexing API (optioneel; geen producten)
 
 1. Ga terug naar **https://console.cloud.google.com/apis/library**
 2. Typ in de zoekbalk: `Web Search Indexing API`
 3. Klik op het zoekresultaat **"Web Search Indexing API"**
 4. Klik op **"INSCHAKELEN"**
 
-✅ **Controle:** Op **https://console.cloud.google.com/apis/enabled** zie je nu beide APIs in de lijst.
+Controleer op **https://console.cloud.google.com/apis/enabled** dat de Search Console API ingeschakeld is. De Indexing API is voor productmonitoring niet nodig.
 
 ---
 
@@ -404,7 +468,7 @@ Na de installatie heb je geen omkijken meer naar de tool. Elke run doorloopt dez
 |------|-----|--------|
 | 1. Scan | Alle sitemaps opnieuw ophalen | Geen |
 | 2. Inspect | Nieuwe en oude URLs checken bij Google | Configureerbaar (standaard 15 per shop) |
-| 3. Push | Niet-geïndexeerde URLs aan Google melden | 200 per dag totaal (Google-limiet) |
+| 3. Notificatie | Alleen toegestane vacatures/livestreams; standaard uit | Configureerbaar quotum, standaard 200 requests per dag |
 | 4. Snapshot | Statistieken opslaan voor de trendgrafiek | 1 per shop per dag |
 
 In de logs zie je per stap wat er gebeurde en wat de eindscore is.
@@ -421,17 +485,19 @@ Alle commando's draai je vanuit de projectmap, met `DATABASE_URL` ingesteld en `
 | `python3 cli.py scan --shop SHOP_ID` | Scant alleen de opgegeven shop |
 | `python3 cli.py inspect` | Inspecteert URLs (slim geselecteerd op prioriteit) |
 | `python3 cli.py inspect --shop SHOP_ID --limit 100` | Max 100 URLs voor één shop |
-| `python3 cli.py push` | Pusht niet-geïndexeerde URLs naar Google |
-| `python3 cli.py push --limit 50` | Max 50 URLs pushen |
+| `python3 cli.py push` | Controleert toegestane URLs en verstuurt notificaties |
+| `python3 cli.py push --limit 50` | Max 50 toegestane notificaties proberen |
 | `python3 cli.py report` | Statusrapport voor alle shops |
 | `python3 cli.py report --shop SHOP_ID` | Detailrapport voor één shop |
+| `python3 cli.py report --shop SHOP_ID --history 30` | Dagelijkse snapshots en gemeten verandering |
+| `python3 cli.py diagnostics data/pipeline-runs/RUN_ID.json --shop SHOP_ID` | Bewaarde canonical/noindex-diagnose zonder databaseverbinding |
 | `python3 cli.py status` | API-gebruik van vandaag |
 | `python3 cli.py run` | Volledige pipeline (scan → inspect → push → snapshot) |
-| `python3 cli.py priority add -f urls.xlsx` | Zet URLs uit txt/csv/xlsx op de priority push-wachtrij |
-| `python3 cli.py priority add -u "https://a.nl, https://b.nl"` | Zet URLs direct (string) op de priority wachtrij |
+| `python3 cli.py priority add -f urls.xlsx` | Plant alleen toegestane URLs uit txt/csv/xlsx voor notificatie |
+| `python3 cli.py priority add -u "https://a.nl, https://b.nl"` | Plant alleen toegestane URLs; overige worden afgewezen |
 | `python3 cli.py priority list` | Toon hoeveel priority URLs er per dag gepland staan |
 
-Priority URLs gaan voor in de wachtrij maar verbruiken hetzelfde dagelijkse push-quotum van 200. Bij meer dan 200 URLs wordt de rest automatisch over opeenvolgende dagen verdeeld.
+Alleen expliciet toegestane URLs kunnen in de notificatiewachtrij worden ingepland. Producten en andere niet-toegestane URLs worden geweigerd; bestaande niet-toegestane pending items krijgen bij de volgende pipeline-run `not_supported`. Er wordt niets verwijderd. Toegestane notificaties delen het ingestelde dagquotum.
 
 Voeg `--verbose` toe (vóór het commando) voor uitgebreidere logging:
 ```bash
@@ -476,7 +542,9 @@ export INDEXING_DELAY_SECONDS=0.5           # pauze tussen pushes
 
 - **Sitemap** — Een XML-bestand met alle URLs van je website. Te vinden op `jouwwebshop.nl/sitemap.xml`.
 - **URL Inspection API** — Google-API die per URL vertelt of hij geïndexeerd is.
-- **Indexing API** — Google-API waarmee je Google een hint kunt geven om een URL (opnieuw) te crawlen. Officieel bedoeld voor vacatures en nieuws, maar werkt vaak ook voor andere content.
+- **Indexing API** — Notificatie-API uitsluitend voor `JobPosting` of `BroadcastEvent` binnen een `VideoObject`; niet voor algemene webshopcontent.
+- **notification_accepted** — Google heeft de melding ontvangen; dit bevestigt geen crawl of indexering.
+- **indexed** — Waargenomen via URL Inspection (`PASS`), onafhankelijk van notificaties.
 - **Service Account** — Een speciaal Google-account dat namens een applicatie inlogt, zonder mens met wachtwoord.
 - **GitHub Secret** — Versleutelde variabele in GitHub. Gebruikt om gevoelige waarden (zoals wachtwoorden en sleutels) veilig te bewaren.
 - **Cron** — Een notatie waarmee je tijdschema's beschrijft. `0 2 * * *` betekent "elke dag om 02:00 UTC".
