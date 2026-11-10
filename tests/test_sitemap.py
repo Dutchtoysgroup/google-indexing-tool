@@ -72,6 +72,38 @@ class SitemapTests(unittest.TestCase):
         self.assertEqual(result.urls, {"other": [BASE + "/product"]})
         apply.assert_called_once_with("test", [(BASE + "/product", None)], complete=True)
 
+    def test_pdf_and_image_locations_are_not_collected(self):
+        manuals = BASE + "/sitemap-manuals.xml"
+        files = [
+            BASE + "/skelter-660700/handleiding-skelter-98978a2e.pdf",
+            BASE + "/a/Handleiding.PDF?v=2",
+            BASE + "/604/0/0/1/ffffff00/ee3a4d1f/exit-skelter.jpg",
+            BASE + "/banner.webp#top",
+        ]
+        result, apply = self.collect({
+            ROOT: response(xml("sitemapindex", [manuals, PAGES])),
+            manuals: response(xml("urlset", files[:2])),
+            PAGES: response(xml("urlset", files[2:] + [BASE + "/about", BASE + "/pdf-handleidingen"])),
+        })
+        # Een sitemap met alleen bestanden maakt de scan niet incompleet:
+        # anders zou verwijderdetectie voor de hele shop stilvallen.
+        self.assertTrue(result.complete)
+        self.assertEqual(result.skipped_files, 4)
+        self.assertEqual(result.urls, {"page": [BASE + "/about", BASE + "/pdf-handleidingen"]})
+        apply.assert_called_once_with(
+            "test",
+            [(BASE + "/about", "page"), (BASE + "/pdf-handleidingen", "page")],
+            complete=True,
+        )
+
+    def test_shop_with_only_files_is_still_incomplete(self):
+        result, apply = self.collect({
+            ROOT: response(xml("urlset", [BASE + "/manual.pdf"])),
+        })
+        self.assertFalse(result.complete)
+        self.assertEqual(result.total, 0)
+        apply.assert_called_once_with("test", [], complete=False)
+
     def test_full_scan_deduplicates_and_keeps_types(self):
         result, apply = self.collect({
             ROOT: response(xml("sitemapindex", [PRODUCTS, PAGES, PRODUCTS])),

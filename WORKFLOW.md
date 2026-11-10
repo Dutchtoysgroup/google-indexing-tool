@@ -36,6 +36,7 @@ Per run (bijvoorbeeld dagelijks):
   - `sitemap-faqs.xml`
   - `sitemap-blog.xml`
 - Alle URLs worden opgeslagen in de database met hun type (`product`, `collection`, `page`, `faq`, `blog`, of `other`).
+- Alleen pagina's tellen mee. Afbeeldingen (`<image:loc>`) en bestanden zoals pdf's uit `sitemap-manuals.xml` worden overgeslagen: de URL-inspectie kent ze vrijwel nooit en ze kosten inspectiequotum. Bestanden die al in de database staan, krijgen bij de eerstvolgende volledige scan `removed_from_sitemap = TRUE`.
 
 **Wat als er nieuwe URLs in de sitemap staan?**
 - Ze worden automatisch toegevoegd aan de database.

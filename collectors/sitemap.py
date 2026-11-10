@@ -25,6 +25,17 @@ TYPE_PATTERNS = {
     r"article": "blog",
 }
 
+# Bestanden zijn geen pagina's: de URL-inspectie kent ze vrijwel nooit en ze
+# kosten inspectiequotum. Houd de lijst gelijk aan het filter van het dashboard
+# dat deze tabel leest.
+FILE_URL_RE = re.compile(r"\.(jpe?g|png|gif|webp|avif|svg|pdf)$", re.IGNORECASE)
+
+
+def is_file_url(url: str) -> bool:
+    """True voor een afbeelding of pdf, ook met querystring of fragment."""
+    return bool(FILE_URL_RE.search(urlparse(url).path))
+
+
 HEADERS = {
     "User-Agent": "GoogleIndexingTool/1.0 (+https://github.com/your-org/google-indexing-tool)",
 }
@@ -37,6 +48,7 @@ class SitemapResult:
     urls: dict[str, list[str]] = field(default_factory=dict)
     failed_sitemaps: list[str] = field(default_factory=list)
     errors: list[dict] = field(default_factory=list)
+    skipped_files: int = 0
 
     @property
     def complete(self) -> bool:
@@ -60,6 +72,11 @@ class SitemapCollector:
         result = self._parse_sitemap(
             f"{shop.base_url.rstrip('/')}/sitemap.xml", shop.base_url
         )
+        if result.complete and not result.total:
+            # Alleen bestanden gevonden: nooit de bestaande URLs als verwijderd markeren.
+            root_url = f"{shop.base_url.rstrip('/')}/sitemap.xml"
+            result.failed_sitemaps.append(root_url)
+            result.errors.append({"url": root_url, "error": "geen pagina's voor deze shop"})
         pairs = [
             (url, None if url_type == "other" else url_type)
             for url_type, urls in result.urls.items()
@@ -67,7 +84,10 @@ class SitemapCollector:
         ]
         apply_sitemap_snapshot(shop.shop_id, pairs, complete=result.complete)
         if result.complete:
-            logger.info(f"  Volledig: {result.total} URLs voor {shop.name}")
+            logger.info(
+                f"  Volledig: {result.total} URLs voor {shop.name} "
+                f"({result.skipped_files} bestanden overgeslagen)"
+            )
         else:
             logger.warning(
                 "Sitemapscan incompleet voor %s: %s; %s URLs verzameld, "
@@ -132,10 +152,15 @@ class SitemapCollector:
                     result.urls.setdefault(child_type, []).extend(urls)
                 result.failed_sitemaps.extend(child.failed_sitemaps)
                 result.errors.extend(child.errors)
+                result.skipped_files += child.skipped_files
+            elif is_file_url(location):
+                # Bijvoorbeeld sitemap-manuals.xml: bewust niet volgen.
+                result.skipped_files += 1
             elif location == base or location.startswith(base + "/"):
                 result.urls.setdefault(url_type or "other", []).append(location)
 
-        if not result.urls and result.complete:
+        # Een sitemap met alleen bestanden is geldig gelezen, geen mislukte scan.
+        if not result.urls and not result.skipped_files and result.complete:
             fail("geen URLs voor deze shop")
         result.urls = {key: list(dict.fromkeys(urls)) for key, urls in result.urls.items()}
         result.failed_sitemaps = list(dict.fromkeys(result.failed_sitemaps))
