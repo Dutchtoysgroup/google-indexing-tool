@@ -117,12 +117,37 @@ def get_connection():
     return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
 
 
+# Tabellen die de pipeline zelf leest of schrijft.
+REQUIRED_TABLES = (
+    "urls", "api_log", "indexing_requests", "daily_snapshots", "priority_urls",
+)
+
+
 def init_db():
-    """Maak alle tabellen aan als ze niet bestaan."""
+    """Maak alle tabellen aan als ze niet bestaan.
+
+    Met DATABASE_AUTH=entra beheert het dataplatform het schema via eigen
+    migraties en is de pipeline geen eigenaar van de tabellen. DDL faalt daar
+    (ook CREATE INDEX IF NOT EXISTS: PostgreSQL controleert eerst eigenaarschap),
+    dus dan controleren we alleen of alles er staat.
+    """
     conn = get_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute(SCHEMA_SQL)
+            if os.environ.get("DATABASE_AUTH") == "entra":
+                missing = []
+                for table in REQUIRED_TABLES:
+                    cur.execute("SELECT to_regclass(%s) AS oid", (table,))
+                    if cur.fetchone()["oid"] is None:
+                        missing.append(table)
+                if missing:
+                    raise RuntimeError(
+                        "Tabellen ontbreken in het beheerde schema: "
+                        + ", ".join(missing)
+                        + ". Lever een migratie aan bij het dataplatform."
+                    )
+            else:
+                cur.execute(SCHEMA_SQL)
         conn.commit()
     finally:
         conn.close()

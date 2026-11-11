@@ -48,12 +48,42 @@ def delete_staged_key():
         pass
 
 
+TERMINAL = ("Success", "Failed", "Aborted")
+
+
+def key_is_staged():
+    """False zodra run.sh de sleutel heeft ingelezen en verwijderd."""
+    try:
+        request(SECRET_PATH, "HEAD").close()
+        return True
+    except RuntimeError:
+        return False
+
+
 def main():
+    """Start één run en wacht hooguit WAIT_MINUTES op de uitkomst.
+
+    Een volledige run duurt uren (URL Inspection is traag), langer dan een
+    GitHub-job mag wachten. De nachtelijke workflow start de run daarom alleen
+    en meldt de uitkomst van de vórige run: met REQUIRE_PREVIOUS_SUCCESS=1
+    faalt de workflow als die mislukt is, zodat een stille storing opvalt.
+    """
     key = os.environ["GOOGLE_SERVICE_ACCOUNT_KEY"].encode()
     if not key:
         raise RuntimeError("Google service account key ontbreekt")
+    wait_seconds = float(os.environ.get("WAIT_MINUTES", "5")) * 60
+    require_previous = os.environ.get("REQUIRE_PREVIOUS_SUCCESS") == "1"
+
     previous = latest_run()
     previous_id = previous.get("id") if previous else None
+    previous_status = previous.get("status", "") if previous else ""
+    if previous:
+        print(f"Vorige run {previous_id}: {previous_status} "
+              f"(gestart {previous.get('start_time', '?')}, duur {previous.get('duration', '?')})")
+        if previous_status not in TERMINAL:
+            raise RuntimeError(f"vorige run {previous_id} loopt nog ({previous_status})")
+    previous_failed = require_previous and previous_status in ("Failed", "Aborted")
+
     request(SECRET_PATH, "PUT", key, {"Content-Type": "application/octet-stream", "If-Match": "*"}).close()
     try:
         request(JOB_PATH, "POST", b"").close()
@@ -61,19 +91,34 @@ def main():
         delete_staged_key()
         raise
     print("Azure indexing WebJob gestart")
-    for _ in range(300):
+
+    deadline = time.monotonic() + wait_seconds
+    status = ""
+    while True:
         time.sleep(10)
         run = latest_run()
-        if not run or run.get("id") == previous_id:
-            continue
-        status = run.get("status", "")
-        if status in ("Success", "Failed", "Aborted"):
-            delete_staged_key()
-            print(f"Azure indexing WebJob: {status}")
-            return 0 if status == "Success" else 1
-    delete_staged_key()
-    print("Azure indexing WebJob heeft de wachttijd overschreden")
-    return 1
+        if run and run.get("id") != previous_id:
+            status = run.get("status", "")
+            if status in TERMINAL:
+                delete_staged_key()
+                print(f"Azure indexing WebJob: {status}")
+                return 0 if status == "Success" and not previous_failed else 1
+            # Zodra de sleutel is ingelezen, loopt de pipeline echt.
+            if status == "Running" and not key_is_staged() and time.monotonic() >= deadline:
+                break
+        if time.monotonic() >= deadline + 600:
+            break
+    if status != "Running":
+        delete_staged_key()
+        print("Azure indexing WebJob is niet gestart binnen de wachttijd")
+        return 1
+    if key_is_staged():
+        print("Waarschuwing: de run loopt maar heeft de sleutel nog niet ingelezen")
+    print("Azure indexing WebJob loopt; de uitkomst staat in de volgende run van deze workflow")
+    if previous_failed:
+        print(f"De vorige run {previous_id} is mislukt ({previous_status})")
+        return 1
+    return 0
 
 
 if __name__ == "__main__":

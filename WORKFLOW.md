@@ -190,12 +190,12 @@ worden alleen die tests overgeslagen.
 
 ### Wanneer draait de pipeline?
 
-Standaard alleen handmatig. Voeg een `schedule:` blok toe aan `.github/workflows/daily-indexing.yml` als je een dagelijks schema wil:
+Elke nacht om 01:00 UTC en handmatig via "Run workflow". De workflow start de Azure WebJob en wacht niet op het einde van de run (die duurt uren); de uitkomst van de vorige run bepaalt of de nachtelijke workflow slaagt. Het schema staat in `.github/workflows/daily-indexing.yml`:
 
 ```yaml
 on:
   schedule:
-    - cron: "0 2 * * *"   # 02:00 UTC
+    - cron: "0 1 * * *"   # 01:00 UTC
   workflow_dispatch: {}
 ```
 

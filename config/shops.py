@@ -9,6 +9,7 @@ aan voordat je de tool draait.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,19 +30,30 @@ class Shop:
 
 
 def _load_shops() -> list[Shop]:
-    if not SHOPS_FILE.exists():
-        raise RuntimeError(
-            f"Configuratiebestand niet gevonden: {SHOPS_FILE}\n"
-            f"Kopieer {EXAMPLE_FILE.name} naar shops.json en vul je eigen "
-            f"webshops in. Zie de README voor uitleg."
-        )
-
-    with SHOPS_FILE.open("r", encoding="utf-8") as f:
-        data = json.load(f)
+    # Gehoste omgevingen (Azure App Service) krijgen shops.json niet mee uit
+    # git; daar staat dezelfde JSON-lijst in de app-instelling SHOPS_JSON.
+    inline = os.environ.get("SHOPS_JSON", "").strip()
+    if inline:
+        source = "SHOPS_JSON"
+        try:
+            data = json.loads(inline)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"SHOPS_JSON bevat geen geldige JSON: {exc}") from exc
+    else:
+        source = str(SHOPS_FILE)
+        if not SHOPS_FILE.exists():
+            raise RuntimeError(
+                f"Configuratiebestand niet gevonden: {SHOPS_FILE}\n"
+                f"Kopieer {EXAMPLE_FILE.name} naar shops.json en vul je eigen "
+                f"webshops in, of zet de lijst in de omgevingsvariabele "
+                f"SHOPS_JSON. Zie de README voor uitleg."
+            )
+        with SHOPS_FILE.open("r", encoding="utf-8") as f:
+            data = json.load(f)
 
     if not isinstance(data, list):
         raise RuntimeError(
-            f"{SHOPS_FILE} moet een JSON-lijst zijn met webshop-objecten."
+            f"{source} moet een JSON-lijst zijn met webshop-objecten."
         )
 
     shops: list[Shop] = []

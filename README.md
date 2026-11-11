@@ -3,9 +3,18 @@
 > **Productie sinds 18 september 2026:** deze pipeline draait als Azure
 > WebJob op `dtg-google-indexing-pipeline-weu` in `Marketing-Dashboard-RG`.
 > Zij schrijft naar `dtg_data.app_indexing` op de centrale PostgreSQL-server.
-> De handmatige GitHub-workflow triggert de WebJob en geeft de bestaande Google
-> service-account-sleutel alleen voor die run door. Oude Neon-instructies
-> hieronder zijn historisch en gelden niet meer voor productie.
+> De GitHub-workflow "Daily Indexing Pipeline" start de WebJob elke nacht om
+> 01:00 UTC (en handmatig via "Run workflow") en geeft de bestaande Google
+> service-account-sleutel alleen voor die run door. Een run duurt uren; de
+> workflow wacht daar niet op, maar faalt de volgende nacht als de vorige run
+> mislukt is. Oude Neon-instructies hieronder zijn historisch en gelden niet
+> meer voor productie.
+>
+> Op Azure staat de configuratie in app-instellingen: `SHOPS_JSON` (de inhoud
+> van `config/shops.json`, die niet in git staat), `INSPECTION_DAILY_LIMIT_PER_SHOP`,
+> `INSPECTION_DELAY_SECONDS` en `TIME_BUDGET_MINUTES`. Het schema `app_indexing`
+> wordt beheerd via migraties in `dtg-data-platform`; met `DATABASE_AUTH=entra`
+> maakt de pipeline zelf geen tabellen aan.
 
 Automatische tool die webshop-URLs monitort via sitemaps, Google URL Inspection en dagelijkse snapshots. Producten worden niet naar de Indexing API gestuurd.
 
